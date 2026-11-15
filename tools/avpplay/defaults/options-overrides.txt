@@ -1,0 +1,6 @@
+# AVP Play's own defaults, laid over defaults/fgamedir/options.txt when the payload is built
+# (tools/avpplay/build_parts.sh, stage "payload"). One options.txt row per line; a row replaces the
+# row with the same key. Release 1.0.3 shipped renderDistance 12 and simulationDistance 12; the
+# shorter render distance is what kept the frame rate up in play on a Vision Pro.
+renderDistance:5
+simulationDistance:8
