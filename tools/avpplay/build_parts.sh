@@ -707,6 +707,12 @@ window_note() {   # what the user will see of the run that starts now
   else echo "Minecraft runs for about $1 (sound off) in a small window that does not take the keyboard."; fi
 }
 
+# A run of the game does not get past its loading screen while the screen of this Mac is locked (seen 2026-11-15:
+# the world run of a job stayed on the loading overlay for its full five minutes, the screen locked, no error). So
+# a run does not start then, and a run that fails says so when the screen is locked.
+screen_locked() { /usr/sbin/ioreg -n Root -d1 2>/dev/null | /usr/bin/grep -q '"IOConsoleLocked" = Yes'; }
+LOCKED_HINT="the screen of this Mac is locked, and Minecraft does not get past its loading screen then; unlock the Mac and resume the build"
+
 # run_game <tag> <kill timer s> <stop: summary|agent> <runfabric.sh arguments...>
 # Starts Minecraft on this Mac (scripts/runfabric.sh: Knot, stock SDL3 window) and ends it: "agent" waits for the
 # world agent to stop the game, "summary" stops it once the bake summary is written. Sets GAME_LOG, GAME_JOIN_S.
@@ -715,6 +721,7 @@ run_game() {
   GAME_LOG="$WORK/logs/game-$tag.log"; GAME_JOIN_S=""
   : > "$GAME_LOG"
   local t0 sh tl kids="" java n why="" quiet=() helper=()
+  if screen_locked; then fail "$LOCKED_HINT."; fi
   # The window keeps out of the way of whoever works at this Mac (VIVECRAFT_BUILD_SHOW_WINDOWS=1 shows it as an
   # ordinary window instead).
   # 1. SDL 3, the window library of Minecraft 26.3, reads these from the environment: the game does not become a
@@ -762,6 +769,7 @@ run_game() {
   /bin/sleep 1; /bin/kill "$tl" 2>/dev/null || true; /bin/sleep 0.2; /bin/kill -KILL "$tl" 2>/dev/null || true
   wait "$tl" 2>/dev/null || true
   if /usr/bin/grep -q 'MicrophoneThread' "$GAME_LOG"; then echo "!! note: Simple Voice Chat started its microphone thread in this run"; fi
+  if [ -n "$why" ] && screen_locked; then fail "$why (game log: $GAME_LOG); $LOCKED_HINT."; fi
   [ -z "$why" ] || fail "$why (game log: $GAME_LOG)."
 }
 
