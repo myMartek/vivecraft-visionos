@@ -99,3 +99,25 @@ Releases 1.0.1 and 1.0.2 (Minecraft 26.2, Vivecraft 0001–0005), built in the p
 | `libminecraft.dylib` (xrsimulator) | `19f17ce381c0b5770f26238a9f824f2738811da0b1f8504cc1bedbcca340e2f2` |
 
 Image id string on the xros dylib: `klmc t8a 2026-10-14T16:51Z xros ni=3e91b06a7df9`.
+
+## AVP Play parts build
+
+`tools/avpplay/build_parts.sh` (BUILDING.md, "Unattended parts build") fetches three archives into its work folder and checks each by sha256. The table is repeated at the top of the script.
+
+| What | URL | Bytes | sha256 |
+| --- | --- | --- | --- |
+| CMake 4.3.3 | https://github.com/Kitware/CMake/releases/download/v4.3.3/cmake-4.3.3-macos-universal.tar.gz | 87,452,640 | `5221a13450c7a0219a2a0d1b6c9085eb06489721fafd8488ccebc1584175d2fb` |
+| Ninja 1.13.2 | https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-mac.zip | 314,051 | `c99048673aa765960a99cf10c6ddb9f1fad506099ff0a0e137ad8960a88f321b` |
+| Oracle GraalVM JDK 25.0.4+7.1 | https://download.oracle.com/graalvm/25/archive/graalvm-jdk-25.0.4_macos-aarch64_bin.tar.gz | 353,673,229 | `0b79e23c133facbad2f7aa55a3b76d17bd59d2fa15e2735bb63391ace223fd13` |
+
+CMake's hash is the one in Kitware's `cmake-4.3.3-SHA-256.txt`, Ninja's the digest GitHub lists for the release asset, GraalVM's the `.sha256` Oracle serves beside the archive; all three were read on 2026-11-15. The GraalVM archive is the tarball of the GraalVM section above under its versioned address. CMake 4.3.3 and Ninja 1.13.2 are the versions the 2026-11-14 build of this tree ran with.
+
+Committed inputs of that script:
+
+- `tools/avpplay/pins/lwjgl-3.4.3-maven.sha256`: the 26 LWJGL 3.4.3 jars `fetch-lwjgl341.sh` downloads (`downloads/lwjgl-3.4.3-maven/SHA256SUMS` of the Natives section). The sha1 of each file equals the `.sha1` Maven Central serves for it (checked 2026-11-15).
+- `tools/avpplay/pins/baked-26.3.cp`: `klepton-payload/baked.cp` of release 1.0.3 (the IPA named below), 138 classpath entries relative to `work/native-image`. The build's own classpath must equal it line for line before the image is built.
+- `tools/avpplay/bake-failures-26.3.txt`: the 46 class names of BUILDING.md section 6, sorted, from a bake of this tree on 2026-11-14 (sha256 of the file `b90f63fa6da2793fd84ffee48e6489dc91b37a031fe66744f7da9cd59781a675`).
+- `tools/avpplay/defaults/fgamedir/`: `options.txt` and `config/` of release 1.0.3's payload (`klepton-payload/root/inst-26.3/fgamedir` in `vivecraft-visionos-1.0.3.ipa`, sha256 `ece6db2e0e3cf0c04e542730a3af2279e2ad4bae463967c06c9f081cf40c5f9b`), byte for byte, without `config/sodium-fingerprint.json`. That file holds salted hashes of the builder's account id and game path; Sodium writes a new one whenever the stored one does not match, which is the case on every other device. `modernfix-mixins.properties` and `smoothboot.json` belong to mods this build does not carry and are kept because the release has them. `tools/avpplay/defaults/options-overrides.txt` holds AVP Play's own rows (render distance 5, simulation distance 8).
+- `tools/avpplay/mkworld/MkWorldAgent.java`: our code, under this repository's `LICENSE`. It calls Minecraft by reflection and contains none of it.
+
+`work/native-image/inst-26.3/config/t23-trim/reachability-metadata.json` on this branch registers one more field, `TransitionConfig.disableRecipeBookCodes` (`SOURCE.txt` beside it). An image built from this branch is therefore not the 1.0.3 image of the Native image section, and its payload is not the 1.0.3 payload: image and payload of one build belong together.

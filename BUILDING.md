@@ -392,6 +392,35 @@ Profiles are per Minecraft version (`inst-<v>/profiles` in the app container). O
 
 The signed IPA is what a release publishes. Install it with SideStore. `KL_NO_LAUNCH=1` builds and does not launch.
 
+## Unattended parts build (AVP Play)
+
+`tools/avpplay/build_parts.sh` runs sections 1–7 and the payload half of section 8 with no manual step, and writes one zip: the 18 device dylibs, `klepton-payload/` and `Licenses/`, laid out as `Payload/KleptonVivecraft.app/…`. It builds no host app, no ANGLE and no icon, no simulator slice except the two small loader shims, and it signs nothing. AVP Play fetches this repository at a pinned commit and runs the script as the first step of installing the game; the host app comes from AVP Play.
+
+```
+AVPPLAY_WORK=/folder/without/blanks AVPPLAY_OUT=/somewhere/parts.zip tools/avpplay/build_parts.sh
+AVPPLAY_WORK=/folder/without/blanks tools/avpplay/build_parts.sh --check
+```
+
+- **The checkout is only read.** The project's scripts write beside themselves, so the work folder holds a working copy of the tree (`AVPPLAY_WORK/tree`) and every step runs in that copy. Downloads, the JDK, the tools, logs and the unpacked parts are in the work folder too (about 8 GB). Nothing is installed elsewhere; no Homebrew, no sudo.
+- **What the Mac needs:** Apple silicon, 16 GB of memory, Xcode with the visionOS SDK selected, 12 GB free. `cmake` 4.3.3 and `ninja` 1.13.2 (official release archives) and the GraalVM JDK of section 1 are fetched into the work folder and checked by sha256; the table is at the top of the script. `python3` is `/usr/bin/python3` (the one Xcode brings), whatever else is installed, and the environment of the caller is dropped.
+- **Output:** `STAGE <i>/<n> <name>` when a stage begins, log lines in between (also in `AVPPLAY_WORK/logs/`), and as the last line `PARTS <zip> <sha256>` with exit status 0. A failure ends with `FAILED <i>/<n> <name>: <one sentence>` and `LOG <path>`. A stage whose result is there is skipped (`… (already done)`), so an interrupted run continues and a second run takes seconds. SIGTERM stops everything the build started, the Minecraft window included. A stage with no output and no growth of its download folders for 20 minutes (native-image: 45) is stopped as hung.
+- **`--check`** prints one line per missing prerequisite (Apple silicon, memory, free space, Xcode and its visionOS SDK, reach of the download hosts) and exits 1, or prints nothing and exits 0.
+
+Where it differs from the sections above:
+
+- **GraalVM** comes from Oracle's archive address of the same tarball (`…/graalvm/25/archive/graalvm-jdk-25.0.4_macos-aarch64_bin.tar.gz`, same bytes and hash), because `latest` moves with the next update. Its use is under the GraalVM Free Terms and Conditions.
+- **Vivecraft:** the one base commit is fetched (`git fetch --depth 1 … 15a9011f…`), not the whole repository. The tree hash after `git am` and the hash of the canonical jar are checked against the pins of section 3.
+- **Natives:** the `xros` slice only (`build-openal.sh xros`, `build-lwjgl341-natives.sh xros`, `build-shaderc-spvc.sh xros`, `build-svc.sh xros`, …) plus the macOS libraries `build-t4.sh` asks for. `build-openxr-shim.sh` has no platform argument and builds both shims in a second. The Maven jars `fetch-lwjgl341.sh` downloads are checked against `tools/avpplay/pins/lwjgl-3.4.3-maven.sha256`.
+- **The bake world** is made by `tools/avpplay/mkworld/MkWorldAgent.java`, a javaagent for one extra Knot run that does what section 6 asks a person to click (Create New World, name `world`, wait, Save and Quit, quit). The jar is built into the work folder, outside the instance. It is not on the bake run's command line, not in `mods/`, and on no classpath; the launcher stage checks that.
+- **The bake** runs with `-Dbake.fullAt=120` and is ended with SIGTERM once `summary.txt` exists. The player must be in the world at least 20 s before the full pass starts, or the bake is repeated once with 300 s. `fullpass-failures.txt` is compared with `tools/avpplay/bake-failures-26.3.txt` (the 46 names of section 6); a different list, `null` other than 0, or a class from another class loader fails the stage. Both runs start with sound off (`soundCategory_master:0.0`), `pauseOnLostFocus:false`, and Simple Voice Chat's `run_local_server=false`, so the microphone is never opened and macOS has nothing to ask.
+- **Settings:** the instance's `config/` is `tools/avpplay/defaults/fgamedir/config` before both runs (so the bake applies the mixins the shipped configs ask for) and again, untouched, when the payload is staged. `options.txt` of the payload is `tools/avpplay/defaults/fgamedir/options.txt` with the rows of `tools/avpplay/defaults/options-overrides.txt` laid over it. What this Mac's JVM wrote is kept in `inst-26.3/mac-run-settings/` and does not ship. The defaults are release 1.0.3's files (see UPSTREAM.md).
+- **Classpath order:** `mkcp.sh`, `mkcp-fabric.sh`, `mkcp-baked.sh` and `build-launcher.sh` run with `LC_ALL=en_US.UTF-8`, everything else with `LC_ALL=C`. The classpath scripts take `mods/*.jar` in the shell's glob order, and that order follows the locale: release 1.0.3 has `bbrb.jar` right after `BadOptimizations.jar`, the C locale puts it last.
+- **Three gates before the image:** the classpath, entry by entry and in order, must be release 1.0.3's `baked.cp` (`tools/avpplay/pins/baked-26.3.cp`); `gen-reflect-extra.py` must reproduce the committed `reflect-config.json` byte for byte; `check-subst.py` must end `0 problem(s)`.
+- **native-image** gets its heap from the machine: 70 % of the memory, at least 11g, at most the 28g of section 7; one worker below 24 GB, two below 32 GB, native-image's own default above. Only 16 GB is measured: 11g and one worker built the image on an M4 in 14 m 49 s with 5.8 GB peak resident (2026-11-14).
+- **The parts:** `bundle_payload.sh` (which runs `stage_native.sh --local`), `copy_licenses.sh`, `mknative.sh` with `XROS_PLATFORMS=xros` for the 18 libraries, then `scrub_paths.py`, as `run.sh` does around the Xcode build. The zip has sorted entries and fixed dates.
+
+A change of the checkout repeats what depends on it: only `options.txt`, the overrides or `visionos/Licenses` repeat the last two stages; anything else except documentation rebuilds from the headers on, with the downloads already there.
+
 ## Building 26.2 (release 1.0.2)
 
 Release 1.0.2 is Minecraft 26.2, Vivecraft 1.3.15 (`openxr` at `13eafae1` + `work/vivecraft-openxr-26.2/patches/` 0001–0006), LWJGL 3.4.1, libffi 3.5.2, FreeType 2.14.1, GLFW through klglfw, no shaderc/SPIRV-Cross. Its recipe is BUILDING.md at tag `1.0.2`:
