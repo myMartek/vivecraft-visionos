@@ -849,6 +849,12 @@ stage_bake() {   # BUILDING.md section 6: the Knot bake, its check, the prune
   case "$s" in *"other-loader-classes=0") ;; *) fail "the bake found classes defined by other class loaders: $s" ;; esac
   py bake-compare "$I/bake/fullpass-failures.txt" "$SELF_DIR/bake-failures-$MCV.txt" \
     || fail "the bake's list of failed classes differs from the expected list for Minecraft $MCV (tools/avpplay/bake-failures-$MCV.txt); the names are in the log."
+  # Mixin's generated classes (inner classes of mixins, Args classes): every one Mixin registered must be in the
+  # overlay, whether or not the bake's run of the game happened to load it (BakeAgent step 3).
+  [ -f "$I/bake/synthetic-summary.txt" ] || fail "the bake wrote no synthetic-summary.txt (BakeAgent step 3 did not run)."
+  s="$(/bin/cat "$I/bake/synthetic-summary.txt")"; echo "$s"
+  case "$s" in *" registered=0 "*) fail "the bake found no Mixin synthetic classes, so it could not read Mixin's registry: $s" ;; esac
+  case "$s" in *" missing=0 "*) ;; *) fail "Mixin synthetic classes are missing from the overlay: $s (names in bake/synthetic-classes.txt)" ;; esac
   # what this Mac's JVM wrote into the game dir, for the record (the payload gets the committed defaults)
   /bin/rm -rf "$I/mac-run-settings"; /bin/mkdir -p "$I/mac-run-settings"
   /bin/cp -R "$I/fgamedir/config" "$I/fgamedir/options.txt" "$I/mac-run-settings/"
