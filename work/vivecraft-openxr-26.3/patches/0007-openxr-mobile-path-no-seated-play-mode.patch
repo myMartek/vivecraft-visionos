@@ -1,0 +1,146 @@
+From 872f871f1d760efa39f9d27909392d5d352db504 Mon Sep 17 00:00:00 2001
+From: myMartek <marcel@wlotzka.org>
+Date: Sun, 15 Nov 2026 11:58:00 +0100
+Subject: [PATCH] openxr: mobile path - no seated play mode
+
+Seated play takes its input from keyboard and mouse and skips the VR
+controllers (MCVR, MCOpenXR.poll). The mobile OpenXR path has neither, so a
+player who chose "Seated" there was left without any input and could not
+switch back.
+
+On the mobile path (DeviceCompat.mobileRequested()) the play mode option is
+not changeable: its button in the main VR settings and its row in the
+settings list are inactive and say why (".disabled.tooltip", en_us and
+de_de). The confirmation screen is never opened, setOptionValue() keeps the
+option at standing, a stored seated=true is read as standing, and poll()
+puts the mode back should it be set some other way. Nothing changes off the
+mobile path.
+---
+ .../gui/settings/GuiMainVRSettings.java       |  7 ++++--
+ .../client_vr/provider/openxr/MCOpenXR.java   |  8 ++++++
+ .../client_vr/settings/VRSettings.java        | 25 ++++++++++++++++++-
+ .../assets/vivecraft/lang/de_de.json          |  1 +
+ .../assets/vivecraft/lang/en_us.json          |  1 +
+ 5 files changed, 39 insertions(+), 3 deletions(-)
+
+diff --git a/common/src/main/java/org/vivecraft/client/gui/settings/GuiMainVRSettings.java b/common/src/main/java/org/vivecraft/client/gui/settings/GuiMainVRSettings.java
+index 461c271..bead7a7 100644
+--- a/common/src/main/java/org/vivecraft/client/gui/settings/GuiMainVRSettings.java
++++ b/common/src/main/java/org/vivecraft/client/gui/settings/GuiMainVRSettings.java
+@@ -22,7 +22,10 @@ public class GuiMainVRSettings extends GuiVROptionsBase {
+         new VROptionLayout(VRSettings.VrOptions.PLAY_MODE_SEATED, (button, mousePos) -> {
+             this.reinit = true;
+ 
+-            if (!this.dataHolder.vrSettings.seated) {
++            if (!VRSettings.seatedAvailable()) {
++                // never ask to confirm a mode that cannot be chosen; a seated setting is put back to standing
++                return !this.dataHolder.vrSettings.seated;
++            } else if (!this.dataHolder.vrSettings.seated) {
+                 this.isConfirm = true;
+                 return true;
+             } else {
+@@ -55,7 +58,7 @@ public class GuiMainVRSettings extends GuiVROptionsBase {
+             return false;
+         }, VROptionLayout.Position.POS_RIGHT, 2.0F, true, "gui.cancel"),
+         new VROptionLayout((button, mousePos) -> {
+-            this.dataHolder.vrSettings.seated = true;
++            this.dataHolder.vrSettings.seated = VRSettings.seatedAvailable();
+             this.vrSettings.saveOptions();
+             this.reinit = true;
+             this.isConfirm = false;
+diff --git a/common/src/main/java/org/vivecraft/client_vr/provider/openxr/MCOpenXR.java b/common/src/main/java/org/vivecraft/client_vr/provider/openxr/MCOpenXR.java
+index 3c24df5..ab1b206 100644
+--- a/common/src/main/java/org/vivecraft/client_vr/provider/openxr/MCOpenXR.java
++++ b/common/src/main/java/org/vivecraft/client_vr/provider/openxr/MCOpenXR.java
+@@ -186,6 +186,14 @@ public class MCOpenXR extends MCVR<XRInputAction> {
+     @Override
+     public void poll(long frameIndex) {
+         if (this.initialized) {
++            if (this.dh.vrSettings.seated && this.device instanceof DeviceCompat.Mobile) {
++                // seated play reads keyboard and mouse and skips the controllers; the mobile path has no keyboard
++                // and mouse, so it never stays in that mode, however the setting got there
++                VRSettings.LOGGER.info(
++                    "Vivecraft: seated play mode is not available on the mobile OpenXR path, using standing");
++                this.dh.vrSettings.seated = false;
++                this.dh.vrSettings.saveOptions();
++            }
+ 
+             if (!this.dh.vrSettings.seated) {
+                 Profiler.get().push("controllers");
+diff --git a/common/src/main/java/org/vivecraft/client_vr/settings/VRSettings.java b/common/src/main/java/org/vivecraft/client_vr/settings/VRSettings.java
+index 7dd02e6..2adeee1 100644
+--- a/common/src/main/java/org/vivecraft/client_vr/settings/VRSettings.java
++++ b/common/src/main/java/org/vivecraft/client_vr/settings/VRSettings.java
+@@ -1273,6 +1273,22 @@ public class VRSettings {
+         }
+ 
+         this.preservedSettingMap = settings;
++
++        // a stored seated play mode would leave the player without any input on the mobile path
++        if (this.seated && !seatedAvailable()) {
++            LOGGER.info("Vivecraft: seated play mode is not available on the mobile OpenXR path, using standing");
++            this.seated = false;
++        }
++    }
++
++    /**
++     * Seated play takes its input from keyboard and mouse and skips the VR controllers. The mobile OpenXR path has
++     * neither, so the play mode stays standing there.
++     *
++     * @return true if the seated play mode can be chosen
++     */
++    public static boolean seatedAvailable() {
++        return !org.vivecraft.client_vr.provider.openxr.DeviceCompat.mobileRequested();
+     }
+ 
+     /**
+@@ -1454,6 +1470,12 @@ public class VRSettings {
+      */
+     public void setOptionValue(VrOptions vrOption, @Nullable Object newValue) {
+         try {
++            if (vrOption == VrOptions.PLAY_MODE_SEATED && !seatedAvailable()) {
++                // no way into seated play on the mobile path, whatever asks for it
++                this.seated = false;
++                this.saveOptions();
++                return;
++            }
+             var mapping = this.fieldEnumMap.get(vrOption);
+             if (mapping != null) {
+                 Field field = mapping.field;
+@@ -2687,7 +2709,8 @@ public class VRSettings {
+         void onOptionChange() {}
+ 
+         public boolean isChangeable() {
+-            return true;
++            // the play mode button is shown inactive, with its ".disabled.tooltip", where seated play cannot work
++            return this != PLAY_MODE_SEATED || seatedAvailable();
+         }
+ 
+         public OptionType getType() {
+diff --git a/common/src/main/resources/assets/vivecraft/lang/de_de.json b/common/src/main/resources/assets/vivecraft/lang/de_de.json
+index 49936f0..8cf97d7 100644
+--- a/common/src/main/resources/assets/vivecraft/lang/de_de.json
++++ b/common/src/main/resources/assets/vivecraft/lang/de_de.json
+@@ -660,6 +660,7 @@
+   "vivecraft.options.VR_REMEMBER_ENABLED.tooltip": "Aktiviert VR beim Starten des Spiels, wenn es das letzte Mal aktiv war.",
+   "vivecraft.options.VR_PLUGIN.tooltip": "Welches VR Plugin genutzt werden soll:\n  OpenVR: Benützt SteamVR als Backend.\n  NullVR: Benützt keine VR Api und lässt das Spiel im VR Modus laufen ohne Headset.",
+   "vivecraft.options.VR_PLUGIN.disabled.tooltip": "§6Kann nicht geändert werden so lange VR eingeschalten ist.§r",
++  "vivecraft.options.PLAY_MODE_SEATED.disabled.tooltip": "§6Der Sitzmodus ist auf diesem Gerät nicht verfügbar: Er braucht Tastatur und Maus.§r",
+   "vivecraft.options.VR_TOGGLE_BUTTON_VISIBLE.tooltip": "Ob der VR Aktivierungsknopf im Hauptmenü gezeigt werden soll.",
+   "vivecraft.options.VR_SETTINGS_BUTTON_VISIBLE.tooltip": "Ob der 'VR Einstellungen' Knopf im Optionsmenü angezeigt werden soll.",
+   "vivecraft.options.VR_SETTINGS_BUTTON_POSITION.tooltip": "Ob der 'VR Einstellungen' Knopf im Optionsmenü links oder rechts positioniert werden soll.",
+diff --git a/common/src/main/resources/assets/vivecraft/lang/en_us.json b/common/src/main/resources/assets/vivecraft/lang/en_us.json
+index 0f04417..efaf3ed 100644
+--- a/common/src/main/resources/assets/vivecraft/lang/en_us.json
++++ b/common/src/main/resources/assets/vivecraft/lang/en_us.json
+@@ -663,6 +663,7 @@
+   "vivecraft.options.VR_REMEMBER_ENABLED.tooltip": "Activates VR on startup, if it was enabled the last time.",
+   "vivecraft.options.VR_PLUGIN.tooltip": "Which VR plugin to use:\n  OpenVR: uses SteamVR as a backend.\n  NullVR: Uses no VR Api and runs the game in VR mode without a headset.",
+   "vivecraft.options.VR_PLUGIN.disabled.tooltip": "§6Cannot be changed while VR is enabled.§r",
++  "vivecraft.options.PLAY_MODE_SEATED.disabled.tooltip": "§6Seated mode is not available on this device: it needs a keyboard and mouse.§r",
+   "vivecraft.options.VR_TOGGLE_BUTTON_VISIBLE.tooltip": "If the VR toggle button should be shown in the main menu.",
+   "vivecraft.options.VR_SETTINGS_BUTTON_VISIBLE.tooltip": "If the 'VR Settings' button should be shown on the options screen.",
+   "vivecraft.options.VR_SETTINGS_BUTTON_POSITION.tooltip": "If the 'VR Settings' button should be shown on the left or the right.",
+-- 
+2.54.0 (Apple Git-157)
+

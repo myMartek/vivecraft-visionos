@@ -21,8 +21,8 @@ meant to be committed. The jar normalizer is the 26.2 one, used by relative path
 cd work/vivecraft-openxr-26.3
 git clone https://github.com/Vivecraft/VivecraftMod VivecraftMod
 git -C VivecraftMod checkout -B kl-mobile-26.3 15a9011f
-git -C VivecraftMod am "$PWD/patches/"*.patch          # 0000..0006
-git -C VivecraftMod rev-parse 'HEAD^{tree}'             # b0488a1e424191a8d9b95afde53d46b54d294282
+git -C VivecraftMod am "$PWD/patches/"*.patch          # 0000..0007
+git -C VivecraftMod rev-parse 'HEAD^{tree}'             # 9f23d5f57f45c63278987abaef03a921d5f21b65
 cd VivecraftMod
 printf 'project.build.excludeForge=true\nproject.build.excludeNeoforge=true\n' > local.properties
 export JAVA_HOME="$ROOT/work/native-image/graalvm/graalvm-jdk-25.0.4+7.1/Contents/Home"
@@ -38,14 +38,20 @@ python3 -I ../../vivecraft-openxr-26.2/canonicalize-vivecraft-jar.py \
 ## Hashes
 
 - Git trees: after 0000 `3c35acf95a067826a2c0fb2a2193ee06920cd0ee`; after 0000–0005
-  `3699b3f2a362c30c9050a9780a7bde264a883104`; **after 0000–0006 `b0488a1e424191a8d9b95afde53d46b54d294282`**
+  `3699b3f2a362c30c9050a9780a7bde264a883104`; after 0000–0006 `b0488a1e424191a8d9b95afde53d46b54d294282`;
+  **after 0000–0007 `9f23d5f57f45c63278987abaef03a921d5f21b65`**
   (patch 0006 amended 2026-11-07: new-profile `hudPitchOffset` default −15° → −8°; the first 0006 gave
   `cb591f18073be44897964a6e646776f9fa81da22`).
   Commit ids depend on who applies the patches and when; only the tree hashes are stable.
-- Canonical jar `VivecraftMod/build/canonical/vivecraft-26.3-1.3.18-fabric.jar` (0000–0006, HUD pitch −8°):
+- Canonical jar `VivecraftMod/build/canonical/vivecraft-26.3-1.3.18-fabric.jar` (0000–0007, no seated play mode on
+  the mobile path): **19,770,429 bytes, sha256 `5c2df5a85e9d76e768203dd4d38e247fd0c052330ad62e7985ef8bcdd197f913`**
+  (2026-11-15, same tools as below). Against the 0000–0006 jar it has the same 1,292 entries, and 74 of
+  them differ: the two lang files, `GuiMainVRSettings`, `MCOpenXR` and `MCOpenXR$1`, and `VRSettings` with 68 of its
+  nested classes (their line numbers moved).
+- The 0000–0006 jar (HUD pitch −8°, release 1.0.3):
   **19,769,483 bytes, sha256 `5092c004f1ab35185dd0e428ad8ff5c4d6c887f72c861649dabb00544f147d87`** (2026-11-07). Against
   the −15° jar below, exactly one entry differs: `org/vivecraft/client_vr/settings/VRSettings.class`. A fresh
-  worktree at `15a9011f` + `git am patches/*.patch` reproduces tree `b0488a1e`.
+  worktree at `15a9011f` + `git am` of 0000–0006 reproduces tree `b0488a1e`.
 - The −15° jar (first 0006, 2026-11-06, in the 1.0.2.x OTA builds): 19,769,483 bytes,
   sha256 `bc2e03e81a1f555efd7389c5e5ed5bb6eb85e235f0e7f131eb6ca5509d0320f3`. Two independent builds (the working
   branch, and a fresh worktree at `15a9011f` + `git am patches/*.patch` with an empty `build/`) gave this same hash;

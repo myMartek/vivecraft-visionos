@@ -5,11 +5,15 @@ Minecraft 26.3 copy of ../vivecraft-openxr-26.2/check-touch-map.py. The only cha
 com.mojang.blaze3d.textures to com.mojang.renderpearl.api.textures (REPORT.md section 6); three
 occurrences in the 0005 checks.
 
-Static check of patches 0003+0004 (Touch map) and 0005 (direct post) on the BUILT jar.
+Static check of patches 0003+0004 (Touch map), 0005 (direct post) and 0007 (no seated play mode on the mobile path)
+on the BUILT jar.
 0005: javap proves the VR post pass takes its target from VRRenderer.getPostProcessTarget, that OpenXRStereoRenderer
 acquires the swapchain image there and skips blitTextures in endFrame when it did, that the property fallback
 (vivecraft.klepton.directpost) is read, that FrameBufferCacheVRMixin routes SwapchainLayerTexture.View to its own
 framebuffer and is registered, and that SwapchainLayerTexture.close never deletes the runtime's GL name.
+0007: javap proves that VRSettings.seatedAvailable() asks DeviceCompat.mobileRequested(), that loadOptions, setOptionValue
+and VrOptions.isChangeable consult it for the play mode, that the main VR settings screen never stores a constant "seated"
+and that MCOpenXR.poll puts the mode back on the mobile device; the two lang files carry the disabled tooltip.
 
 Touch map: Reads XRBinding.quest2Bindings() bytecode with javap,
 pairs each (action, source) ldc couple, and asserts the Touch map is exactly QuestCraft's Touch layout plus
@@ -101,3 +105,33 @@ assert "_deleteTexture" not in method(slt, "public void close();"), "close() del
 print("[direct-post] OK: post pass -> VRRenderer.getPostProcessTarget(view); OpenXR acquires there, endFrame skips "
       "blitTextures when it did; -Dvivecraft.klepton.directpost read; FrameBufferCacheVRMixin registered; "
       "SwapchainLayerTexture.close keeps the GL name")
+
+# ---- 0007: no seated play mode on the mobile path (bytecode) ----
+import re as _re
+V_ = "org.vivecraft.client_vr.settings.VRSettings"
+vs = javap_c(V_)
+assert "DeviceCompat.mobileRequested:()Z" in method(vs, "public static boolean seatedAvailable();"), \
+    "seatedAvailable() does not ask DeviceCompat.mobileRequested()"
+lo = method(vs, "public void loadOptions();")
+assert "Method seatedAvailable:()Z" in lo and "putfield" in lo.split("Method seatedAvailable:()Z", 1)[1] \
+    and "Field seated:Z" in lo.split("Method seatedAvailable:()Z", 1)[1], "loadOptions keeps a stored seated=true"
+so = method(vs, "public void setOptionValue(org.vivecraft.client_vr.settings.VRSettings$VrOptions, java.lang.Object);")
+i_opt, i_ask, i_map = so.find("VrOptions.PLAY_MODE_SEATED"), so.find("Method seatedAvailable:()Z"), so.find("fieldEnumMap")
+assert 0 <= i_opt < i_ask < i_map, "setOptionValue does not test the play mode before it looks the option up"
+ic = method(javap_c(V_ + "$VrOptions"), "public boolean isChangeable();")
+assert "PLAY_MODE_SEATED" in ic and "VRSettings.seatedAvailable:()Z" in ic, "the play mode option stays changeable"
+gm = javap_c("org.vivecraft.client.gui.settings.GuiMainVRSettings")
+assert gm.count("VRSettings.seatedAvailable:()Z") >= 2, "the main VR settings screen does not ask seatedAvailable()"
+assert not _re.search(r"iconst_1\s+\d+: putfield\s+#\d+\s+// Field org/vivecraft/client_vr/settings/VRSettings\.seated:Z", gm), \
+    "the main VR settings screen still stores seated = true"
+pl = method(javap_c("org.vivecraft.client_vr.provider.openxr.MCOpenXR"), "public void poll(long);")
+i_get, i_dev, i_put = pl.find("VRSettings.seated:Z"), pl.find("DeviceCompat$Mobile"), pl.find("putfield")
+assert 0 <= i_get < i_dev < i_put and "VRSettings.seated:Z" in pl[i_put:].split("\n", 1)[0], \
+    "MCOpenXR.poll does not put the play mode back on the mobile device"
+for lang_ in ("en_us", "de_de"):
+    t = json.loads(subprocess.run(["unzip", "-p", jar, f"assets/vivecraft/lang/{lang_}.json"], capture_output=True,
+                                  check=True).stdout.decode("utf-8"))
+    assert t.get("vivecraft.options.PLAY_MODE_SEATED.disabled.tooltip"), f"{lang_}: no disabled tooltip for the play mode"
+print("[no-seated] OK: seatedAvailable() = !DeviceCompat.mobileRequested(); loadOptions, setOptionValue and "
+      "VrOptions.isChangeable consult it; the settings screen stores no constant seated; MCOpenXR.poll puts the mode "
+      "back on DeviceCompat.Mobile; disabled tooltip in en_us and de_de")

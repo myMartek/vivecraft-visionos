@@ -72,7 +72,7 @@ This repo commits those two framework trees and the BSD notice at `vendor/out/LI
 
 ## 3. Vivecraft jar
 
-Upstream has no OpenXR branch for 26.3. The base is `Multiloader-26.3` at `15a9011f` (mod 1.3.18). Patch 0000 is upstream's `openxr` branch (`13eafae1`) merged onto it and adapted to 26.3, squashed to one commit. That is upstream LGPLv3 code by the Vivecraft authors; `work/vivecraft-openxr-26.3/REPORT.md` lists every conflict and adaptation. Patches 0001–0005 are the port. Patch 0006 lowers the head-locked in-world HUD (it makes `hudPitchOffset` act on that HUD and sets new-profile defaults: HEAD, 2 m, 0.8 scale, −8°).
+Upstream has no OpenXR branch for 26.3. The base is `Multiloader-26.3` at `15a9011f` (mod 1.3.18). Patch 0000 is upstream's `openxr` branch (`13eafae1`) merged onto it and adapted to 26.3, squashed to one commit. That is upstream LGPLv3 code by the Vivecraft authors; `work/vivecraft-openxr-26.3/REPORT.md` lists every conflict and adaptation. Patches 0001–0005 are the port. Patch 0006 lowers the head-locked in-world HUD (it makes `hudPitchOffset` act on that HUD and sets new-profile defaults: HEAD, 2 m, 0.8 scale, −8°). Patch 0007 takes the "Seated" play mode out on the mobile path: that mode reads keyboard and mouse and skips the VR controllers, so on a headset without either it left the player with no input and no way back. With `vivecraft.openxr.mobile` the play-mode button and its row in the settings list are inactive and say why, `setOptionValue` keeps the option at standing, a stored `seated=true` is read as standing, and `MCOpenXR.poll` puts the mode back should it be set some other way. Nothing changes off the mobile path.
 
 From `work/vivecraft-openxr-26.3` (`cd "$ROOT/work/vivecraft-openxr-26.3"`):
 
@@ -82,7 +82,7 @@ git -C VivecraftMod checkout -B kl-mobile-26.3 15a9011f
 git -C VivecraftMod am "$ROOT/work/vivecraft-openxr-26.3/patches/"*.patch
 ```
 
-After 0000–0006, `git -C VivecraftMod rev-parse 'HEAD^{tree}'` prints `b0488a1e424191a8d9b95afde53d46b54d294282`. That is a tree hash; the commit ids `git am` makes depend on your name and the time. License: LGPLv3.
+After 0000–0007, `git -C VivecraftMod rev-parse 'HEAD^{tree}'` prints `9f23d5f57f45c63278987abaef03a921d5f21b65` (after 0000–0006, the state release 1.0.3 was built from: `b0488a1e424191a8d9b95afde53d46b54d294282`). That is a tree hash; the commit ids `git am` makes depend on your name and the time. License: LGPLv3.
 
 ```
 cd VivecraftMod
@@ -103,7 +103,7 @@ Gradle 9.3.0 (the wrapper) resolves `fabric_loom=1.15-SNAPSHOT` to Loom 1.15.5, 
 
 The raw jar in `build/libs/` is not byte-reproducible: Loom writes changing ZIP metadata for the nested jars even when every file inside is identical. `canonicalize-vivecraft-jar.py` (the 26.2 directory's copy, used by relative path) rewrites it as a sorted, uncompressed ZIP with fixed metadata and the same entries and bytes. It refuses to overwrite its output, hence the `rm -f`.
 
-Expected sha256 of `build/canonical/vivecraft-26.3-1.3.18-fabric.jar` (patches 0000–0006, 19,769,483 bytes):
+Expected sha256 of `build/canonical/vivecraft-26.3-1.3.18-fabric.jar` (patches 0000–0007, 19,770,429 bytes):
 
 ```
 5092c004f1ab35185dd0e428ad8ff5c4d6c887f72c861649dabb00544f147d87
@@ -117,9 +117,9 @@ Static checks on the built jar (no game run):
 python3 -I ../check-touch-map.py build/canonical/vivecraft-26.3-1.3.18-fabric.jar "$JAVA_HOME/bin/javap"
 ```
 
-It prints `[touch-map] OK: 31 bindings == QuestCraft Touch layout (30) + key.push_to_talk -> …` and `[direct-post] OK: …`. It is the 26.2 script with the 26.3 `GpuTextureView` package (`com.mojang.renderpearl.api.textures`).
+It prints `[touch-map] OK: 31 bindings == QuestCraft Touch layout (30) + key.push_to_talk -> …`, `[direct-post] OK: …` and `[no-seated] OK: …` (patch 0007). It is the 26.2 script with the 26.3 `GpuTextureView` package (`com.mojang.renderpearl.api.textures`) and the 0007 check.
 
-`work/native-image/scripts/m3a/mods-26.3.json` sets `local` to `work/vivecraft-openxr-26.3/VivecraftMod/build/canonical/vivecraft-26.3-1.3.18-fabric.jar` (relative to the repo root) and `sha256` to the hash above. The jar is a build output. Do not commit it. The 1.0.3 image is baked from this jar, so it has patch 0006 (see UPSTREAM.md).
+`work/native-image/scripts/m3a/mods-26.3.json` sets `local` to `work/vivecraft-openxr-26.3/VivecraftMod/build/canonical/vivecraft-26.3-1.3.18-fabric.jar` (relative to the repo root) and `sha256` to the hash above. The jar is a build output. Do not commit it. The 1.0.3 image is baked from the 0000–0006 jar, so it has patch 0006 and not 0007 (see UPSTREAM.md).
 
 ## 4. Client, libraries, assets, mods
 

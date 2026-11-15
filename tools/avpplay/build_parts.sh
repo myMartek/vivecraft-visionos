@@ -94,10 +94,10 @@ pin() { printf '%s\n' "$PINS" | /usr/bin/awk -v n="$1" -v f="$2" '$1==n{print $f
 # Pins of BUILDING.md that the project's scripts do not check themselves (sections 3 and 5).
 VIVECRAFT_URL=https://github.com/Vivecraft/VivecraftMod
 VIVECRAFT_BASE=15a9011fd5eb7816d44e168256814fc4b5c24c04
-VIVECRAFT_TREE=b0488a1e424191a8d9b95afde53d46b54d294282
+VIVECRAFT_TREE=9f23d5f57f45c63278987abaef03a921d5f21b65        # after patches 0000-0007
 VIVECRAFT_JAR=vivecraft-26.3-1.3.18-fabric.jar
-VIVECRAFT_JAR_SHA=5092c004f1ab35185dd0e428ad8ff5c4d6c887f72c861649dabb00544f147d87
-VIVECRAFT_JAR_BYTES=19769483
+VIVECRAFT_JAR_SHA=5c2df5a85e9d76e768203dd4d38e247fd0c052330ad62e7985ef8bcdd197f913
+VIVECRAFT_JAR_BYTES=19770429
 LTW_URL=https://github.com/PojavLauncherTeam/ltw
 LTW_COMMIT=7703f1c29a1fd7f151484c38fb7563bb79ca8ccb
 SVC_PINS='opus4j=362db14553d39c4dc080e4edd50630b17dbf9682 rnnoise4j=5f2097d504fc67f31d0d8900e9df0a5bdf4ec9ae speex4j=9428cb14b8ec373fcd36f5b5792899611042ece9 lame4j=b09599989878cbc7349075eca0b3aa4f105e5957'
@@ -503,9 +503,10 @@ stage_vivecraft() {   # BUILDING.md section 3
   echo "Vivecraft jar sha256 $VIVECRAFT_JAR_SHA (as pinned)"
   python3 -I ../check-touch-map.py "build/canonical/$VIVECRAFT_JAR" "$JAVA_HOME/bin/javap" > "$WORK/tmp/touch-map.txt" \
     || { /bin/cat "$WORK/tmp/touch-map.txt"; fail "the static check of the Vivecraft jar (check-touch-map.py) failed."; }
-  /usr/bin/grep -E '^\[(touch-map|direct-post)\]' "$WORK/tmp/touch-map.txt"
+  /usr/bin/grep -E '^\[(touch-map|direct-post|no-seated)\]' "$WORK/tmp/touch-map.txt"
   /usr/bin/grep -q '^\[touch-map\] OK' "$WORK/tmp/touch-map.txt" && /usr/bin/grep -q '^\[direct-post\] OK' "$WORK/tmp/touch-map.txt" \
-    || fail "the static check of the Vivecraft jar did not print its two OK lines."
+    && /usr/bin/grep -q '^\[no-seated\] OK' "$WORK/tmp/touch-map.txt" \
+    || fail "the static check of the Vivecraft jar did not print its three OK lines."
 }
 check_vivecraft() { [ -f "$TREE/work/vivecraft-openxr-26.3/VivecraftMod/build/canonical/$VIVECRAFT_JAR" ]; }
 

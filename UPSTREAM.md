@@ -25,12 +25,14 @@ Minecraft 26.3 (release 1.0.3 onward):
 - Base: https://github.com/Vivecraft/VivecraftMod branch `Multiloader-26.3` at `15a9011fd5eb7816d44e168256814fc4b5c24c04` ("bump to 1.3.18", mod 1.3.18).
 - Patch 0000 (`work/vivecraft-openxr-26.3/patches/0000-openxr-on-26.3.patch`): upstream's `openxr` branch at `13eafae17a987521cc270e81cd774a4746ad9299` merged onto `15a9011f` (merge base `dee18e33`), conflicts resolved and the openxr-only code adapted to 26.3 (`com.mojang.blaze3d.*` → `com.mojang.renderpearl.*`, SDL3 instead of GLFW, LWJGL OpenXR 3.4.3), squashed to one commit. It is upstream LGPLv3 code by the Vivecraft authors, not ours. Upstream has not moved `openxr` past 26.2. Resolutions are listed in `work/vivecraft-openxr-26.3/REPORT.md`.
 - Patches 0001–0006 (same subjects and authors as the 26.2 set, rebased): 0001–0005 are the port. 0006 (from [zschwendi/avp-craft](https://github.com/zschwendi/avp-craft)) lowers the head-locked in-world HUD (new-profile default −8°).
-- Git trees: after 0000 `3c35acf95a067826a2c0fb2a2193ee06920cd0ee`; after 0000–0005 `3699b3f2a362c30c9050a9780a7bde264a883104`; after 0000–0006 `b0488a1e424191a8d9b95afde53d46b54d294282`.
-- Jar (0000–0006, canonicalized with `work/vivecraft-openxr-26.2/canonicalize-vivecraft-jar.py`): `vivecraft-26.3-1.3.18-fabric.jar`, 19,769,483 bytes, sha256 `5092c004f1ab35185dd0e428ad8ff5c4d6c887f72c861649dabb00544f147d87`. Built 2026-11-07 (0006 at −8°) with GraalVM 25.0.4+7.1, Gradle 9.3.0, Loom 1.15.5, fabric-loader 0.19.5, Fabric API 0.165.2+26.3 (upstream's `gradle.properties` says 0.160.4+26.3). Two builds gave the same canonical hash; their raw Loom jars differed.
+- Patch 0007 (this fork, 2026-11-15): no "Seated" play mode on the mobile path. Seated play reads keyboard and mouse and skips the VR controllers; on a headset without either it locked the player out. 26.3 only; the 26.2 set is unchanged.
+- Git trees: after 0000 `3c35acf95a067826a2c0fb2a2193ee06920cd0ee`; after 0000–0005 `3699b3f2a362c30c9050a9780a7bde264a883104`; after 0000–0006 `b0488a1e424191a8d9b95afde53d46b54d294282`; after 0000–0007 `9f23d5f57f45c63278987abaef03a921d5f21b65`.
+- Jar (0000–0007, canonicalized with `work/vivecraft-openxr-26.2/canonicalize-vivecraft-jar.py`): `vivecraft-26.3-1.3.18-fabric.jar`, 19,770,429 bytes, sha256 `5c2df5a85e9d76e768203dd4d38e247fd0c052330ad62e7985ef8bcdd197f913`. Built 2026-11-15, same tools as below; this is the jar `mods-26.3.json` and `tools/avpplay/build_parts.sh` pin.
+- Jar (0000–0006, release 1.0.3): 19,769,483 bytes, sha256 `5092c004f1ab35185dd0e428ad8ff5c4d6c887f72c861649dabb00544f147d87`. Built 2026-11-07 (0006 at −8°) with GraalVM 25.0.4+7.1, Gradle 9.3.0, Loom 1.15.5, fabric-loader 0.19.5, Fabric API 0.165.2+26.3 (upstream's `gradle.properties` says 0.160.4+26.3). Two builds gave the same canonical hash; their raw Loom jars differed.
 - Nested LWJGL OpenXR: 3.4.3 (patch 0000 bumps `lwjgl_openxr_version` from 3.4.1).
 - License: LGPLv3 (`LICENSES/LGPL-3.0.txt`)
 
-**The 1.0.3 image has patch 0006.** It is the first shipped image that does. ni id: `3e783e38b00b` (`out/t8-26.3`, built as `out/t8-26.3c`, `klmc t8a 2026-11-07T23:08Z`).
+**The 1.0.3 image has patch 0006** and not 0007. It is the first shipped image that has 0006. ni id: `3e783e38b00b` (`out/t8-26.3`, built as `out/t8-26.3c`, `klmc t8a 2026-11-07T23:08Z`).
 
 Minecraft 26.2 (releases 1.0.1 and 1.0.2, tag `1.0.2`):
 
