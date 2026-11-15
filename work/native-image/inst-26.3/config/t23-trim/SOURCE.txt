@@ -10,3 +10,9 @@ t23-trim/reachability-metadata.json = inst-26.2's traced file (no 26.3 agent tra
 t23-extra/resource-config.json = inst-26.2's (version-independent patterns).
 t23-extra/reflect-config.json  = MCV=26.3 python3 -I scripts/t8/gen-reflect-extra.py (derived; reflect-extra-manual.json
   entries bounded by sinceMcv/untilMcv: authlib KeyData retargeted, LWJGL 3.4.3 memory backends added).
+2026-11-15 (avp-play): dev.tr7zw.transition.config.TransitionConfig gained the field "disableRecipeBookCodes" by hand.
+  TRansition 1.0.26 (nested in EntityCulling 1.11.3) has that field; the 26.2 trace predates it. A config/transition.json
+  that names it (a bake run without a config left such a file on 2026-11-14; a run that finds the two-key file leaves
+  it alone) made Gson's Field.set throw MissingReflectionRegistrationError in ClientTRansitionMod.<clinit>, before the
+  title screen. The release payload's two-key file never hit it. The entry is the one the error message asks for; an
+  image built with it has not been run on a headset yet.

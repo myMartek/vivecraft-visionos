@@ -798,6 +798,9 @@
    "type": "dev.tr7zw.transition.config.TransitionConfig",
    "fields": [
     {
+     "name": "disableRecipeBookCodes"
+    },
+    {
      "name": "userConsentedToSendCrashReports"
     },
     {
