@@ -52,7 +52,22 @@ if [ "${AVPPLAY_ENV:-}" != clean ]; then
     eval "isset=\${$v+x}"
     if [ -n "$isset" ]; then eval "keep+=(\"$v=\${$v}\")"; fi
   done
-  exec /usr/bin/env -i "${keep[@]}" /bin/bash "$SELF" "$@"
+  # The same goes for signals. A program that ignores SIGTERM (or blocks it) hands that on to everything it starts,
+  # and a shell cannot take back a signal that was ignored when it started: `kill` then ends nothing this script
+  # starts, and a stage waits for ever on a helper it thought it had stopped (seen with the world stage, run from a
+  # job that had SIGTERM ignored). So the clean start also puts every signal back to its default.
+  exec /usr/bin/env -i "${keep[@]}" /usr/bin/python3 -I -c '
+import os, signal, sys
+for n in range(1, signal.NSIG):
+    if n in (signal.SIGKILL, signal.SIGSTOP):
+        continue
+    try:
+        signal.signal(n, signal.SIG_DFL)
+    except (OSError, ValueError, RuntimeError):
+        pass
+signal.pthread_sigmask(signal.SIG_SETMASK, [])
+os.execv("/bin/bash", ["/bin/bash"] + sys.argv[1:])
+' "$SELF" "$@"
 fi
 
 set -u
@@ -692,7 +707,8 @@ run_game() {
   /bin/sleep 1
   for java in $kids; do /bin/kill -KILL "$java" 2>/dev/null || true; done
   wait "$sh" 2>/dev/null || true
-  /bin/sleep 1; /bin/kill "$tl" 2>/dev/null || true; wait "$tl" 2>/dev/null || true
+  /bin/sleep 1; /bin/kill "$tl" 2>/dev/null || true; /bin/sleep 0.2; /bin/kill -KILL "$tl" 2>/dev/null || true
+  wait "$tl" 2>/dev/null || true
   if /usr/bin/grep -q 'MicrophoneThread' "$GAME_LOG"; then echo "!! note: Simple Voice Chat started its microphone thread in this run"; fi
   [ -z "$why" ] || fail "$why (game log: $GAME_LOG)."
 }
