@@ -27,6 +27,14 @@
 # and the exit status is not 0 (143 after SIGTERM). A SIGTERM, to this process or to its process group, stops
 # everything the build started, the running game included; the next run continues at the interrupted stage.
 #
+# Two more kinds of lines are for a progress display (BUILDING.md, "Progress lines"); a reader that does not know
+# them can skip them, the lines above stay as they are:
+#   PLAN <stage>:<seconds>[:<flags>] ...   once, before the first STAGE line: every stage in order, how long it took
+#                                          on the reference Mac in the state this work folder is in, flag d when its
+#                                          result is there and it will be skipped, n when it is mostly a download
+#   PROGRESS <done> <total> <unit>[ <w>,...]  within a stage, at most about once a second: files, bytes, libraries,
+#                                          parts (with the reference seconds of each part) or seconds (a timed wait)
+#
 # --check tests the prerequisites only and prints one line per problem (exit 1), or nothing (exit 0).
 #
 # Two stages run the real game on this Mac for about three minutes in all (BUILDING.md section 6: the world the bake
@@ -977,6 +985,71 @@ progress_size() {   # progress_size <dir>... -> kilobytes in all of them
   /usr/bin/du -sk "$@" 2>/dev/null | /usr/bin/awk '{s += $1} END {print s + 0}'
 }
 
+# ---------------------------------------------------------------------------------------------------------------
+# Reference durations, for the PLAN line: how many seconds each stage took on the reference Mac (Mac mini M4,
+# 10 cores, 16 GB, macOS 27.2, Xcode 27.1), medians of the full runs of 2026-11-15: the proof run from an empty work
+# folder, the verification run of bc355cd, and three AVP Play jobs (one from an empty folder, two that rebuilt with
+# the downloads kept). A stage that downloads what it builds from is much shorter once that is in the work folder;
+# both values are measured unless a comment says otherwise. AVP Play scales them by how fast this Mac turns out to
+# be; they are no limits.
+ref_of() {   # ref_of <stage> -> <seconds>, or <seconds>:n for a stage whose time is mostly the internet line's
+  local n
+  case $1 in
+    tree) echo 2 ;;
+    tools) if [ -f "$WORK/dl/cmake-$(pin cmake 2)-macos-universal.tar.gz" ] && [ -f "$WORK/dl/ninja-$(pin ninja 2)-mac.zip" ]
+           then echo 3; else echo 14:n; fi ;;                      # 16, 12 s downloaded; 3 s unpacked only
+    graalvm) if [ -f "$WORK/dl/graalvm-jdk-$(pin graalvm 2)-macos-aarch64.tar.gz" ]; then echo 3; else echo 35:n; fi ;;
+    headers) echo 2 ;;
+    vivecraft)   # 165, 289, 507 s from an empty Gradle home (Gradle and Fabric Loom download Minecraft's sources)
+      if [ ! -d "$TREE/work/vivecraft-openxr-26.3/gradle-home/wrapper/dists" ]; then echo 290:n
+      elif [ "$(/usr/bin/git -C "$TREE/work/vivecraft-openxr-26.3/VivecraftMod" rev-parse -q --verify 'HEAD^{tree}' 2>/dev/null)" = "$VIVECRAFT_TREE" ]
+      then echo 8                                                   # 7, 9, 7 s: Gradle finds everything up to date
+      else echo 30; fi ;;   # not measured: a cached Loom set-up plus the three compile tasks of the runs above (12-19 s)
+    minecraft)   # 183, 882 s with nothing there; 8, 9, 9 s with every file there (only checked)
+      n=$(/usr/bin/find "$I/assets/objects" -type f 2>/dev/null | /usr/bin/wc -l | /usr/bin/tr -d ' ')
+      [ "${n:-0}" -gt 5149 ] && n=5149
+      if [ -f "$I/files/versions/$MCV/client.jar" ] && [ "${n:-0}" = 5149 ]; then echo 9
+      else echo "$(( 9 + 411 * (5149 - ${n:-0}) / 5149 )):n"; fi ;;
+    openal) echo 58 ;;
+    lwjgl) if lwjgl_cold; then echo 263; else echo 158; fi ;;     # 263 s with the sources downloaded (one run)
+    klsdl) echo 12 ;;
+    ltw) echo 28 ;;
+    voicechat) if [ -d "$TREE/work/natives/downloads/svc/opus4j/.git" ]; then echo 37; else echo 83; fi ;;   # 83: one run
+    shims) echo 2 ;;
+    classpath) echo 3 ;;
+    world) echo 62 ;;
+    bake) echo 141 ;;
+    launcher) echo 17 ;;
+    image) echo 975 ;;          # 824, 925, 1024, 1416 s (the last one while the Mac was busy with other work)
+    relink) echo 6 ;;
+    payload) echo 31 ;;
+    zip) echo 8 ;;
+    *) echo 60 ;;
+  esac
+}
+lwjgl_cold() { ! /bin/ls "$TREE"/work/natives/downloads/freetype-*.tar.gz >/dev/null 2>&1; }
+
+plan_line() {   # the PLAN line: every stage with its reference seconds; d = will be skipped, n = see ref_of
+  local i=0 s r f runs=0 line=PLAN
+  for s in $STAGES; do
+    i=$((i+1)); r="$(ref_of "$s")"; f=""
+    # the same rule as run_stage: a stage after the third that has to run makes every later one run too
+    if [ $runs = 0 ] && stage_done "$s"; then f=d
+    elif [ "$i" -gt 3 ]; then runs=1; fi
+    case $r in *:n) r=${r%:n}; f="${f}n" ;; esac
+    line="$line $s:$r${f:+:$f}"
+  done
+  say "$line"
+}
+
+progress_args() {   # what the log pipe needs to count a stage's progress (parts_helper.py, class Progress)
+  case $1 in
+    tools) echo "files=$WORK/dl/cmake-$(pin cmake 2)-macos-universal.tar.gz:$(pin cmake 3),$WORK/dl/ninja-$(pin ninja 2)-mac.zip:$(pin ninja 3)" ;;
+    graalvm) echo "files=$WORK/dl/graalvm-jdk-$(pin graalvm 2)-macos-aarch64.tar.gz:$(pin graalvm 3)" ;;
+    lwjgl) if lwjgl_cold; then echo cold=1; fi ;;
+  esac
+}
+
 PREFLIGHT=0
 preflight() {   # before the first stage that has work to do
   [ $PREFLIGHT = 0 ] || return 0
@@ -1006,7 +1079,7 @@ run_stage() {
   t0=$(/bin/date +%s)
   /usr/bin/touch "$HB"
   /bin/rm -f "$FIFO"; /usr/bin/mkfifo "$FIFO"
-  /usr/bin/python3 -I -B "$HELPER" logpipe "$LOG" "$HB" < "$FIFO" &
+  /usr/bin/python3 -I -B "$HELPER" logpipe "$LOG" "$HB" "$name" $(progress_args "$name") < "$FIFO" &
   LP_PID=$!
   ( trap - TERM INT HUP; set -e; "stage_$name" ) > "$FIFO" 2>&1 < /dev/null &
   ST_PID=$!
@@ -1051,6 +1124,7 @@ run_stage() {
 say "build_parts.sh: Minecraft $MCV + Vivecraft parts for Apple Vision Pro"
 say "checkout $SRC (stamp $STAMP_ALL), work folder $WORK, log $LOG"
 say "$MEM_GB GB memory, $(/usr/sbin/sysctl -n hw.ncpu) cores, $(/usr/bin/sw_vers -productVersion 2>/dev/null | /usr/bin/tr -d '\n') / $(/usr/bin/xcodebuild -version 2>/dev/null | /usr/bin/tr '\n' ' ')"
+plan_line
 T_START=$(/bin/date +%s)
 n=0
 for s in $STAGES; do n=$((n+1)); run_stage $n "$s"; done

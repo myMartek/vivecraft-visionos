@@ -7,7 +7,9 @@ Only the Python that macOS and Xcode bring (3.9), standard library only.
   sync <checkout> <tree> <new.json> <old.json>
                                             make <tree> hold the checkout's files (changed ones copied, vanished
                                             ones removed); build products in <tree> are left alone
-  logpipe <logfile> <heartbeat>             stdin -> stdout and, time-stamped, -> logfile; touches heartbeat
+  logpipe <logfile> <heartbeat> [<stage> [files=<path>:<bytes>,...] [cold=1]]
+                                            stdin -> stdout and, time-stamped, -> logfile; touches heartbeat; with a
+                                            stage name it adds that stage's PROGRESS lines (BUILDING.md)
   sha256 <file>                             print the file's sha256
   verify <file> <sha256> [<bytes>]          exit 0 when the file has that hash (and size)
   bake-compare <failures.txt> <expected.txt>
@@ -151,9 +153,159 @@ def cmd_sync(root, tree, new_json, old_json):
     print("working copy: %d files, %d copied, %d removed -> %s" % (len(new), copied, removed, tree))
 
 
-def cmd_logpipe(logfile, heartbeat):
+PROTOCOL = ("STAGE ", "PARTS ", "FAILED ", "LOG ", "PLAN ", "PROGRESS ")
+
+# How far a stage is, for "PROGRESS <done> <total> <unit>[ <w1>,<w2>,...]" (BUILDING.md, "Progress lines").
+#
+# Parts: a stage whose tools print a line when one of its parts ENDS. The weights are the reference seconds of the
+# parts, medians of the full runs on the reference Mac (Mac mini M4, 16 GB, 2026-11-15: the proof run, the
+# verification run of bc355cd and the AVP Play jobs that built from an empty or a kept work folder):
+#   vivecraft  3 runs from an empty Gradle home; parts end at "Welcome to Gradle", "> Configure project :common",
+#              "> Configure project :fabric", the first "> Task ", "BUILD SUCCESSFUL" and the pinned-jar check.
+#   lwjgl      5 runs; parts end at the LWJGL checkout ("LWJGL 3.4.3 at"), the macOS libraries ("== macosx: stock"),
+#              the visionOS LWJGL libraries ("BUILT-lwjgl-xros") and shaderc/SPIRV-Cross ("== xros: shaderc").
+#              The first part is 76 s when the sources and jars are downloaded, 3 s when they are there.
+#   image      4 runs; native-image prints "[k/8] <phase>" when phase k ends.
+PARTS = {
+    "vivecraft": ([r"^Welcome to Gradle", r"^> Configure project :common", r"^> Configure project :fabric",
+                   r"^> Task ", r"^BUILD SUCCESSFUL", r"^Vivecraft jar sha256 .*\(as pinned\)"],
+                  [18, 32, 79, 74, 12, 3]),
+    "lwjgl": ([r"^LWJGL 3\.4\.3 at ", r"^== macosx: stock", r"^BUILT-lwjgl-xros", r"^== xros: shaderc"],
+              [3, 15, 19, 120]),
+    "image": ([r"^\[1/8\] ", r"^\[2/8\] ", r"^\[3/8\] ", r"^\[4/8\] ", r"^\[5/8\] ", r"^\[6/8\] ", r"^\[7/8\] ",
+               r"^\[8/8\] "],
+              [11, 568, 50, 28, 38, 170, 40, 70]),
+}
+# Minecraft: fetch-inst.py prints "<group> <done>/<total>" every 25 files and one "mod ..." line per mod. The totals
+# here are only the start (26.3: 51 + 7 + 22 libraries, 5,149 asset objects in index 34, 13 pinned mods); each
+# group's own line replaces them.
+MINECRAFT_GROUPS = (("vanilla", 51), ("fabric", 7), ("lwjgl", 22), ("assets", 5149), ("mods", 13))
+# The bake: the full pass starts a fixed time after the JVM, and the summary is there about 22 s later (4 runs:
+# 140-155 s for a 120 s delay).
+BAKE_AFTER_PASS = 22
+
+
+class Progress:
+    """Watches one stage's lines (and, for downloads, the size of the files being written) and prints PROGRESS
+    lines: at most one a second, the last state always."""
+
+    def __init__(self, stage, args, write, clock=time.time):
+        import re
+        self.re = re
+        self.stage = stage
+        self.write = write
+        self.clock = clock
+        self.start = clock()
+        self.files = []          # (path, bytes) of downloads whose size is the progress
+        self.cold = False
+        for a in args:
+            if a.startswith("files="):
+                for item in a[6:].split(","):
+                    path, _, size = item.rpartition(":")
+                    if path and size.isdigit():
+                        self.files.append((path, int(size)))
+            elif a == "cold=1":
+                self.cold = True
+        self.parts = None
+        if stage in PARTS:
+            marks, weights = PARTS[stage]
+            weights = list(weights)
+            if stage == "lwjgl" and self.cold:
+                weights[0] = 76
+            self.parts = ([re.compile(m) for m in marks], weights)
+        self.groups = dict((g, [0, n]) for g, n in MINECRAFT_GROUPS) if stage == "minecraft" else None
+        self.state = None        # (done, total, unit, extra)
+        self.sent = None
+        self.sent_at = 0.0
+        self.polled_at = 0.0
+        self.parts_done = 0
+        self.libs = 0
+        # A stage that will be counted says so as it begins, so that its bar is there from the start.
+        if self.parts is not None:
+            self.set(0, len(self.parts[1]), "parts", ",".join(str(w) for w in self.parts[1]), now=True)
+        elif self.groups is not None:
+            self.set(0, sum(g[1] for g in self.groups.values()), "files", now=True)
+        elif stage == "voicechat":
+            self.set(0, 4, "libraries", now=True)
+
+    def set(self, done, total, unit, extra="", now=False):
+        done = max(0, min(int(done), int(total)))
+        self.state = (done, int(total), unit, extra)
+        self.flush(force=now or done == total)
+
+    def flush(self, force=False):
+        if self.state is None or self.state == self.sent:
+            return
+        t = self.clock()
+        if not force and t - self.sent_at < 1.0:
+            return
+        done, total, unit, extra = self.state
+        self.write("PROGRESS %d %d %s%s" % (done, total, unit, (" " + extra) if extra else ""))
+        self.sent, self.sent_at = self.state, t
+
+    def line(self, text):
+        s = text.strip()
+        if self.parts is not None:
+            marks, weights = self.parts
+            for k in range(len(marks) - 1, self.parts_done - 1, -1):
+                if marks[k].search(s):
+                    self.parts_done = k + 1
+                    self.set(k + 1, len(weights), "parts", ",".join(str(w) for w in weights), now=True)
+                    break
+        elif self.groups is not None:
+            m = self.re.match(r"^(vanilla|fabric|lwjgl|assets) (\d+)/(\d+)$", s)
+            if m:
+                self.groups[m.group(1)] = [int(m.group(2)), int(m.group(3))]
+            elif s.startswith("mod ") and ".jar " in s:
+                g = self.groups["mods"]
+                g[0] += 1
+                g[1] = max(g[1], g[0])
+            elif s.startswith("DONE "):
+                for g in self.groups.values():
+                    g[0] = g[1]
+            else:
+                return
+            done = sum(g[0] for g in self.groups.values())
+            total = sum(g[1] for g in self.groups.values())
+            self.set(done, total, "files")
+        elif self.stage == "voicechat":
+            if self.re.match(r"^OK xros \w+ -> ", s):
+                self.libs += 1
+                self.set(self.libs, max(4, self.libs), "libraries", now=True)
+        elif self.stage == "bake":
+            m = self.re.match(r"^The full pass starts (\d+) s after the JVM", s)
+            if m:
+                behind = self.clock() - self.start
+                self.set(behind, behind + int(m.group(1)) + BAKE_AFTER_PASS, "seconds", now=True)
+        elif self.stage == "zip":
+            m = self.re.match(r"^zip (\d+)/(\d+) bytes$", s)
+            if m:
+                self.set(int(m.group(1)), int(m.group(2)), "bytes")
+
+    def tick(self):
+        if self.files:
+            t = self.clock()
+            if t - self.polled_at >= 1.0:
+                self.polled_at = t
+                have = 0
+                for path, size in self.files:
+                    n = 0
+                    for p in (path, path + ".part"):
+                        try:
+                            n = max(n, os.path.getsize(p))
+                        except OSError:
+                            pass
+                    have += min(n, size)
+                total = sum(size for _, size in self.files)
+                if have > 0 or self.state is None:
+                    self.set(have, total, "bytes")
+        self.flush()
+
+
+def cmd_logpipe(logfile, heartbeat, stage=None, *args):
     """Copy stdin to stdout and to the log. A line that looks like one of the protocol lines the caller prints
-    itself (STAGE, PARTS, FAILED, LOG) gets a leading blank so a reader of stdout cannot mistake it."""
+    itself (STAGE, PARTS, FAILED, LOG, PLAN, PROGRESS) gets a leading blank so a reader of stdout cannot mistake it.
+    With a stage name, the stage's PROGRESS lines are added (class Progress)."""
     stop = {"at": None}
     def on_term(signum, frame):
         if stop["at"] is None:
@@ -176,12 +328,7 @@ def cmd_logpipe(logfile, heartbeat):
             except OSError:
                 pass
 
-    def emit(raw):
-        if b"\r" in raw:
-            raw = raw.rstrip(b"\r").split(b"\r")[-1]
-        text = raw.decode("utf-8", "replace")
-        if text.startswith(("STAGE ", "PARTS ", "FAILED ", "LOG ")):
-            text = " " + text
+    def put(text):
         line = text.encode("utf-8", "replace") + b"\n"
         try:
             log.write(time.strftime("%H:%M:%S ").encode() + line)
@@ -194,9 +341,23 @@ def cmd_logpipe(logfile, heartbeat):
             except (OSError, ValueError):
                 out_ok[0] = False
 
+    progress = Progress(stage, args, put) if stage else None
+
+    def emit(raw):
+        if b"\r" in raw:
+            raw = raw.rstrip(b"\r").split(b"\r")[-1]
+        text = raw.decode("utf-8", "replace")
+        if text.startswith(PROTOCOL):
+            text = " " + text
+        put(text)
+        if progress is not None:
+            progress.line(text)
+
     while True:
         if stop["at"] is not None and time.time() >= stop["at"]:
             break
+        if progress is not None:
+            progress.tick()
         try:
             ready, _, _ = select.select([0], [], [], 0.25)
         except (InterruptedError, OSError):
@@ -224,6 +385,8 @@ def cmd_logpipe(logfile, heartbeat):
             buf = b""
     if buf:
         emit(buf)
+    if progress is not None:
+        progress.flush(force=True)
 
 
 def cmd_verify(path, want, size=None):
@@ -349,8 +512,15 @@ def cmd_zip(src, out):
     if os.path.lexists(tmp):
         os.remove(tmp)
     date = (1980, 1, 1, 0, 0, 0)
+    # How far it is, in bytes of the files written, about once a second (on stderr: stdout is the result line).
+    total = sum(os.path.getsize(p) for _, p in entries if p is not None)
+    told, written = 0.0, 0
     with zipfile.ZipFile(tmp, "w", allowZip64=True) as z:
         for name, path in entries:
+            if time.time() - told >= 1.0:
+                told = time.time()
+                sys.stderr.write("zip %d/%d bytes\n" % (written, total))
+                sys.stderr.flush()
             info = zipfile.ZipInfo(name, date_time=date)
             info.create_system = 3
             if path is None:
@@ -364,6 +534,8 @@ def cmd_zip(src, out):
             info.compress_type = zipfile.ZIP_STORED if stored else zipfile.ZIP_DEFLATED
             with open(path, "rb") as f, z.open(info, "w", force_zip64=False) as dst:
                 shutil.copyfileobj(f, dst, 1 << 20)
+            written += os.path.getsize(path)
+    sys.stderr.write("zip %d/%d bytes\n" % (total, total))
     with zipfile.ZipFile(tmp) as z:
         n = len(z.infolist())
     os.replace(tmp, out)
