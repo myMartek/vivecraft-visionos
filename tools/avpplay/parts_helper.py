@@ -153,7 +153,7 @@ def cmd_sync(root, tree, new_json, old_json):
     print("working copy: %d files, %d copied, %d removed -> %s" % (len(new), copied, removed, tree))
 
 
-PROTOCOL = ("STAGE ", "PARTS ", "FAILED ", "LOG ", "PLAN ", "PROGRESS ")
+PROTOCOL = ("STAGE ", "PARTS ", "FAILED ", "LOG ", "PLAN ", "PROGRESS ", "WAIT ")
 
 # How far a stage is, for "PROGRESS <done> <total> <unit>[ <w1>,<w2>,...]" (BUILDING.md, "Progress lines").
 #
@@ -245,6 +245,13 @@ class Progress:
 
     def line(self, text):
         s = text.strip()
+        # A wait for the user (build_parts.sh, wait_unlocked): said at once, whatever the stage counts.
+        if s.startswith("waiting: the screen of this Mac is locked"):
+            self.write("WAIT screen-locked")
+            return
+        if s.startswith("the screen is unlocked again"):
+            self.write("WAIT end")
+            return
         if self.parts is not None:
             marks, weights = self.parts
             for k in range(len(marks) - 1, self.parts_done - 1, -1):

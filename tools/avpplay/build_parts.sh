@@ -34,12 +34,14 @@
 #                                          result is there and it will be skipped, n when it is mostly a download
 #   PROGRESS <done> <total> <unit>[ <w>,...]  within a stage, at most about once a second: files, bytes, libraries,
 #                                          parts (with the reference seconds of each part) or seconds (a timed wait)
+#   WAIT screen-locked / WAIT end          the build waits until the screen of the Mac is unlocked (the two game
+#                                          runs cannot run while it is locked), and goes on by itself
 #
 # --check tests the prerequisites only and prints one line per problem (exit 1), or nothing (exit 0).
 #
 # Two stages run the real game on this Mac for about three minutes in all (BUILDING.md section 6: the world the bake
-# loads, then the Knot bake). It needs a logged-in desktop, because the game draws into a real window, but nobody has
-# to see it: the window is invisible, the game shows no Dock icon and leaves keyboard and mouse pointer alone. Sound is
+# loads, then the Knot bake). It needs a logged-in desktop with the screen unlocked (the build waits for that),
+# because the game draws into a real window, but nobody has to see it: the window is invisible, the game shows no Dock icon and leaves keyboard and mouse pointer alone. Sound is
 # off, the microphone is not opened, and both runs end by themselves.
 #
 # Optional environment: AVPPLAY_NI_HEAP (native-image heap, e.g. 11g), AVPPLAY_NI_THREADS, AVPPLAY_BUILD_JOBS (compiler
@@ -708,20 +710,35 @@ window_note() {   # what the user will see of the run that starts now
 }
 
 # A run of the game does not get past its loading screen while the screen of this Mac is locked (seen 2026-11-15:
-# the world run of a job stayed on the loading overlay for its full five minutes, the screen locked, no error). So
-# a run does not start then, and a run that fails says so when the screen is locked.
-screen_locked() { /usr/sbin/ioreg -n Root -d1 2>/dev/null | /usr/bin/grep -q '"IOConsoleLocked" = Yes'; }
-LOCKED_HINT="the screen of this Mac is locked, and Minecraft does not get past its loading screen then; unlock the Mac and resume the build"
+# the world run of a job stayed on the loading overlay for its full five minutes, the screen locked, no error). So a
+# run waits for the unlock before it starts, and a run that fails after the screen was locked while it ran is made
+# again once (the stage's own preparation first) after the unlock. While it waits, the build prints
+#   waiting: the screen of this Mac is locked; …        (the log pipe adds "WAIT screen-locked")
+#   the screen is unlocked again; the build continues   (the log pipe adds "WAIT end")
+# and keeps its heartbeat going: time spent locked does not count against the stall guard.
+screen_locked() {
+  /usr/sbin/ioreg -n Root -d1 2>/dev/null | /usr/bin/grep -qE '"IOConsoleLocked" = Yes|"CGSSessionScreenIsLocked"=Yes'
+}
+wait_unlocked() {   # returns at once when the screen is not locked
+  screen_locked || return 0
+  echo "waiting: the screen of this Mac is locked; Minecraft can only run while it is unlocked. The build goes on by itself after the unlock."
+  while screen_locked; do /usr/bin/touch "$HB"; /bin/sleep 5; done
+  echo "the screen is unlocked again; the build continues"
+}
+LOCKED_TWICE="the game run stalled twice while the screen of this Mac was locked; keep the Mac unlocked and resume the build"
 
 # run_game <tag> <kill timer s> <stop: summary|agent> <runfabric.sh arguments...>
 # Starts Minecraft on this Mac (scripts/runfabric.sh: Knot, stock SDL3 window) and ends it: "agent" waits for the
-# world agent to stop the game, "summary" stops it once the bake summary is written. Sets GAME_LOG, GAME_JOIN_S.
+# world agent to stop the game, "summary" stops it once the bake summary is written. Sets GAME_LOG, GAME_JOIN_S, and
+# GAME_RETRY=1 instead of failing when the run failed after the screen was locked while it ran (the caller then
+# prepares the run again and makes it once more; wait_unlocked comes first).
 run_game() {
   local tag=$1 timer=$2 stop=$3; shift 3
   GAME_LOG="$WORK/logs/game-$tag.log"; GAME_JOIN_S=""
   : > "$GAME_LOG"
-  local t0 sh tl kids="" java n why="" quiet=() helper=()
-  if screen_locked; then fail "$LOCKED_HINT."; fi
+  local t0 sh tl kids="" java n why="" quiet=() helper=() locked=0 ticks=0
+  GAME_RETRY=0
+  wait_unlocked
   # The window keeps out of the way of whoever works at this Mac (VIVECRAFT_BUILD_SHOW_WINDOWS=1 shows it as an
   # ordinary window instead).
   # 1. SDL 3, the window library of Minecraft 26.3, reads these from the environment: the game does not become a
@@ -748,6 +765,11 @@ run_game() {
   tl=$!
   while /bin/kill -0 "$sh" 2>/dev/null; do
     /bin/sleep 1
+    ticks=$((ticks+1))
+    if [ $((ticks % 5)) = 0 ] && screen_locked; then
+      [ $locked = 0 ] && echo "!! the screen of this Mac was locked while the game ran"
+      locked=1; /usr/bin/touch "$HB"
+    fi
     n="$(descendants "$sh")"; [ -n "$n" ] && kids="$n"
     if [ -z "$GAME_JOIN_S" ] && /usr/bin/grep -q 'joined the game' "$GAME_LOG"; then GAME_JOIN_S=$(( $(/bin/date +%s) - t0 )); fi
     if /usr/bin/grep -q '\[MKWORLD\] FAILED' "$GAME_LOG"; then why="the world agent reported a failure"; break; fi
@@ -769,16 +791,26 @@ run_game() {
   /bin/sleep 1; /bin/kill "$tl" 2>/dev/null || true; /bin/sleep 0.2; /bin/kill -KILL "$tl" 2>/dev/null || true
   wait "$tl" 2>/dev/null || true
   if /usr/bin/grep -q 'MicrophoneThread' "$GAME_LOG"; then echo "!! note: Simple Voice Chat started its microphone thread in this run"; fi
-  if [ -n "$why" ] && screen_locked; then fail "$why (game log: $GAME_LOG); $LOCKED_HINT."; fi
+  if [ -n "$why" ] && { [ $locked = 1 ] || screen_locked; }; then
+    echo "!! $why (game log: $GAME_LOG) – the screen was locked; the run is made again after the unlock"
+    /bin/cp -f "$GAME_LOG" "$GAME_LOG.locked" 2>/dev/null || true
+    GAME_RETRY=1; wait_unlocked; return 0
+  fi
   [ -z "$why" ] || fail "$why (game log: $GAME_LOG)."
 }
 
 stage_world() {   # BUILDING.md section 6: the world the bake loads, made without clicks
-  /bin/rm -rf "$I/fgamedir/saves/world"; /bin/mkdir -p "$I/fgamedir/saves"
-  mac_run_settings
-  window_note "a minute"
-  export GAMEARGS=""
-  run_game world 900 agent -javaagent:"$WORK/agents/mkworld-agent.jar=30" -Dvivecraft.openxr.mobile=true
+  local try
+  for try in 1 2; do
+    # everything a run needs from the start, so that a second run after a locked screen begins the same way
+    /bin/rm -rf "$I/fgamedir/saves/world"; /bin/mkdir -p "$I/fgamedir/saves"
+    mac_run_settings
+    window_note "a minute"
+    export GAMEARGS=""
+    run_game world 900 agent -javaagent:"$WORK/agents/mkworld-agent.jar=30" -Dvivecraft.openxr.mobile=true
+    [ "$GAME_RETRY" = 1 ] || break
+  done
+  [ "$GAME_RETRY" = 1 ] && fail "$LOCKED_TWICE."
   /usr/bin/grep -q '\[MKWORLD\] DONE' "$GAME_LOG" \
     || fail "the world-creation run ended early: $(/usr/bin/grep -o '\[MKWORLD\].*' "$GAME_LOG" | /usr/bin/tail -1 | /usr/bin/cut -c1-160) (game log: $GAME_LOG)."
   [ -f "$I/fgamedir/saves/world/level.dat" ] || fail "the world-creation run left no saves/world/level.dat."
@@ -794,13 +826,18 @@ check_world() { [ -f "$I/fgamedir/saves/world/level.dat" ]; }
 stage_bake() {   # BUILDING.md section 6: the Knot bake, its check, the prune
   cd "$NI"
   local at ok=0 s
+  local try
   for at in 120 300; do
-    /bin/rm -rf "$I/bake"
-    mac_run_settings
-    window_note "$((at / 60 + 1)) minutes"; echo "The full pass starts $at s after the JVM."
-    export GAMEARGS="--quickPlaySingleplayer world"
-    run_game bake $((at + 480)) summary \
-      -javaagent:"$NI/bakeagent/bakeagent.jar=$I/bake" -Dbake.fullAt=$at -Dvivecraft.openxr.mobile=true
+    for try in 1 2; do
+      /bin/rm -rf "$I/bake"
+      mac_run_settings
+      window_note "$((at / 60 + 1)) minutes"; echo "The full pass starts $at s after the JVM."
+      export GAMEARGS="--quickPlaySingleplayer world"
+      run_game bake $((at + 480)) summary \
+        -javaagent:"$NI/bakeagent/bakeagent.jar=$I/bake" -Dbake.fullAt=$at -Dvivecraft.openxr.mobile=true
+      [ "$GAME_RETRY" = 1 ] || break
+    done
+    [ "$GAME_RETRY" = 1 ] && fail "$LOCKED_TWICE."
     [ -f "$I/bake/summary.txt" ] || fail "the bake run ended without writing its summary (game log: $GAME_LOG)."
     # the world must be loaded when the full pass starts (BUILDING.md: "raise it on a slow Mac")
     if [ -n "$GAME_JOIN_S" ] && [ "$GAME_JOIN_S" -le $((at - 20)) ]; then ok=1; echo "the player was in the world $GAME_JOIN_S s after the start, the full pass began at $at s"; break; fi
