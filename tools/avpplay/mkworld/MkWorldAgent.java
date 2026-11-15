@@ -11,7 +11,9 @@
 // The names are those of the unobfuscated Minecraft 26.3 client. Reflection only: this file compiles without the
 // game on the classpath, and no Minecraft class is loaded by the agent before the game itself has loaded
 // net.minecraft.client.Minecraft (so Knot and Mixin see the normal order).
-// Every step prints a "[MKWORLD] ..." line; the last one is "[MKWORLD] DONE; stopping the game". A failed step
+// Every step prints a "[MKWORLD] ..." line; the last one is "[MKWORLD] DONE; stopping the game". While the player is
+// in the world, a "[MKWORLD] rendering: <n> fps, window active=<true|false>, mouse grabbed=<true|false>" line every
+// five seconds. A failed step
 // prints "[MKWORLD] FAILED: ..." and the game is stopped where that is possible.
 // Usage: -javaagent:mkworld-agent.jar[=<seconds in world, default 30>]
 import java.lang.instrument.Instrumentation;
@@ -124,6 +126,7 @@ public class MkWorldAgent {
       Thread.sleep(1000);
       String s = cn(screen()) + " player=" + (field("player") != null) + " level=" + (field("level") != null);
       if (!s.equals(last)) { log("state: " + s); last = s; }
+      if (k % 5 == 4) log("rendering: " + rendering());
     }
 
     // 5. Save and Quit to Title (the pause screen button's call), then quit the game
@@ -151,6 +154,17 @@ public class MkWorldAgent {
     Thread.sleep(3000);
     log("DONE; stopping the game");
     quit();
+  }
+
+  // The game's own frame counter, whether it takes its window for the one in front, and whether it holds the mouse:
+  // the log shows that the game kept drawing while its window was out of the way, and that it left keyboard and mouse
+  // to whoever works at this Mac.
+  static String rendering() {
+    try {
+      Object mouse = mcC.getField("mouseHandler").get(mc);
+      return mcC.getMethod("getFps").invoke(mc) + " fps, window active=" + mcC.getMethod("isWindowActive").invoke(mc)
+          + ", mouse grabbed=" + mouse.getClass().getMethod("isMouseGrabbed").invoke(mouse);
+    } catch (Throwable e) { return "?(" + e + ")"; }
   }
 
   static String describeWorldType(Object ui) {

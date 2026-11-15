@@ -25,15 +25,19 @@
 #   FAILED <i>/<n> <name>: <one sentence>
 #   LOG <path of the log>
 # and the exit status is not 0 (143 after SIGTERM). A SIGTERM, to this process or to its process group, stops
-# everything the build started, the Minecraft window included; the next run continues at the interrupted stage.
+# everything the build started, the running game included; the next run continues at the interrupted stage.
 #
 # --check tests the prerequisites only and prints one line per problem (exit 1), or nothing (exit 0).
 #
-# Two stages open a real Minecraft window for about three minutes in all (BUILDING.md section 6: the world the bake
-# loads, then the Knot bake). Sound is off, the microphone is not opened, and both runs end by themselves.
+# Two stages run the real game on this Mac for about three minutes in all (BUILDING.md section 6: the world the bake
+# loads, then the Knot bake). It needs a logged-in desktop, because the game draws into a real window, but nobody has
+# to see it: the window is invisible, the game shows no Dock icon and leaves keyboard and mouse pointer alone. Sound is
+# off, the microphone is not opened, and both runs end by themselves.
 #
 # Optional environment: AVPPLAY_NI_HEAP (native-image heap, e.g. 11g), AVPPLAY_NI_THREADS, AVPPLAY_BUILD_JOBS (compiler
-# jobs of the native helpers), AVPPLAY_STALL_MIN (minutes without output or download progress before a stage counts as hung).
+# jobs of the native helpers), AVPPLAY_STALL_MIN (minutes without output or download progress before a stage counts as hung),
+# VIVECRAFT_BUILD_SHOW_WINDOWS=1 (the two runs open ordinary Minecraft windows that come to the front, as a game
+# started by hand does; for looking at what the game does. Not an AVPPLAY_ name, so AVP Play hands it through).
 
 # zsh/sh-safe entry: everything below is bash.
 if [ -z "${BASH_VERSION:-}" ]; then exec /bin/bash "$0" "$@"; fi
@@ -47,7 +51,7 @@ if [ "${AVPPLAY_ENV:-}" != clean ]; then
   keep=(AVPPLAY_ENV=clean "HOME=${HOME:-}" "USER=${USER:-$(/usr/bin/id -un)}" "LOGNAME=${LOGNAME:-$(/usr/bin/id -un)}"
         PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C LANG=C)
   for v in AVPPLAY_WORK AVPPLAY_OUT AVPPLAY_NI_HEAP AVPPLAY_NI_THREADS AVPPLAY_BUILD_JOBS AVPPLAY_STALL_MIN \
-           AVPPLAY_DEV_STAMP DEVELOPER_DIR http_proxy https_proxy all_proxy no_proxy \
+           AVPPLAY_DEV_STAMP VIVECRAFT_BUILD_SHOW_WINDOWS DEVELOPER_DIR http_proxy https_proxy all_proxy no_proxy \
            HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY; do
     eval "isset=\${$v+x}"
     if [ -n "$isset" ]; then eval "keep+=(\"$v=\${$v}\")"; fi
@@ -669,10 +673,31 @@ stage_classpath() {   # BUILDING.md section 6: classpaths and the two agents
   /bin/rm -rf "$MW" "$WORK/agents/mkworld-agent.jar"; /bin/mkdir -p "$MW"
   "$G/bin/javac" -d "$MW" "$SELF_DIR/mkworld/MkWorldAgent.java"
   "$G/bin/jar" cfm "$WORK/agents/mkworld-agent.jar" "$SELF_DIR/mkworld/MANIFEST.MF" -C "$MW" .
+  # The window helper of the two runs (tools/avpplay/quietwindow, see run_game). The build does not depend on it:
+  # without it the two windows are small, never take the keyboard and show no Dock icon, but they can be seen, and
+  # the game puts the mouse pointer into the middle of its window once when the player enters the world.
+  /bin/rm -f "$QUIET_LIB"
+  if /usr/bin/xcrun --sdk macosx clang -arch arm64 -fobjc-arc -O1 -dynamiclib -framework AppKit \
+       -o "$QUIET_LIB" "$SELF_DIR/quietwindow/quiet_window.m" \
+     && "$G/bin/java" -agentpath:"$QUIET_LIB" -version >/dev/null 2>&1; then
+    echo "window helper built: the two Minecraft windows will be invisible"
+  else
+    /bin/rm -f "$QUIET_LIB"
+    echo "!! note: the window helper could not be built or loaded; the two Minecraft windows will be small and will not take the keyboard"
+  fi
   mac_run_settings
   echo "$(/usr/bin/tr ':' '\n' < "$I/fabric.cp" | /usr/bin/wc -l | /usr/bin/tr -d ' ') classpath entries, $(/bin/ls "$I/fgamedir/mods" | /usr/bin/wc -l | /usr/bin/tr -d ' ') mods"
 }
 check_classpath() { [ -f "$I/fabric.cp" ] && [ -f "$NI/bakeagent/bakeagent.jar" ] && [ -f "$WORK/agents/mkworld-agent.jar" ] && [ -d "$I/fgamedir/mods" ]; }
+
+QUIET_W=320; QUIET_H=240      # the window of the two runs (points), unless VIVECRAFT_BUILD_SHOW_WINDOWS=1
+QUIET_LIB="$WORK/agents/libquietwindow.dylib"
+
+window_note() {   # what the user will see of the run that starts now
+  if [ "${VIVECRAFT_BUILD_SHOW_WINDOWS:-0}" = 1 ]; then echo "A Minecraft window opens for about $1 (sound off)."
+  elif [ -f "$QUIET_LIB" ]; then echo "Minecraft runs for about $1 (sound off). Its window is invisible: nothing opens on the screen."
+  else echo "Minecraft runs for about $1 (sound off) in a small window that does not take the keyboard."; fi
+}
 
 # run_game <tag> <kill timer s> <stop: summary|agent> <runfabric.sh arguments...>
 # Starts Minecraft on this Mac (scripts/runfabric.sh: Knot, stock SDL3 window) and ends it: "agent" waits for the
@@ -681,10 +706,28 @@ run_game() {
   local tag=$1 timer=$2 stop=$3; shift 3
   GAME_LOG="$WORK/logs/game-$tag.log"; GAME_JOIN_S=""
   : > "$GAME_LOG"
-  local t0 sh tl kids="" java n why=""
+  local t0 sh tl kids="" java n why="" quiet=() helper=()
+  # The window keeps out of the way of whoever works at this Mac (VIVECRAFT_BUILD_SHOW_WINDOWS=1 shows it as an
+  # ordinary window instead).
+  # 1. SDL 3, the window library of Minecraft 26.3, reads these from the environment: the game does not become a
+  #    foreground app (no Dock icon, no menu bar, nothing is taken from the app in front), and its window is put on
+  #    screen without being made the key window. The window is small.
+  # 2. The window helper, when stage "classpath" could build it, makes that window invisible (fully transparent, no
+  #    shadow, clicks pass through) and tells the game that its window is not the one in front, so that the game
+  #    does not put the mouse pointer into it. It is a native library with no Java in it (-agentpath).
+  # None of this is game code: the classpath, the mods and the Java agents are the same as with the window shown.
+  # Compared on 2026-11-15, same world, window shown against window invisible: the bake wrote the same 19,314 class
+  # names, the same failure list and the same prune counts; where bytes differed (715 classes) it was the Mixin
+  # session id of the run and, in two classes, the counter Mixin appends to merged member names, as between any two
+  # bakes.
+  if [ "${VIVECRAFT_BUILD_SHOW_WINDOWS:-0}" != 1 ]; then
+    quiet=(SDL_MAC_BACKGROUND_APP=1 SDL_WINDOW_ACTIVATE_WHEN_SHOWN=0 SDL_WINDOW_ACTIVATE_WHEN_RAISED=0)
+    GAMEARGS="${GAMEARGS:+$GAMEARGS }--width $QUIET_W --height $QUIET_H"
+    if [ -f "$QUIET_LIB" ]; then helper=(-agentpath:"$QUIET_LIB"); fi
+  fi
   t0=$(/bin/date +%s)
-  ( cd "$NI" && exec /bin/bash scripts/runfabric.sh "$timer" "$@" -Djava.io.tmpdir="$WORK/tmp" -Djna.tmpdir="$WORK/tmp" ) \
-    > "$GAME_LOG" 2>&1 < /dev/null &
+  ( cd "$NI" && exec /usr/bin/env ${quiet[@]+"${quiet[@]}"} /bin/bash scripts/runfabric.sh "$timer" "$@" \
+      ${helper[@]+"${helper[@]}"} -Djava.io.tmpdir="$WORK/tmp" -Djna.tmpdir="$WORK/tmp" ) > "$GAME_LOG" 2>&1 < /dev/null &
   sh=$!
   /usr/bin/tail -n +1 -f "$GAME_LOG" &
   tl=$!
@@ -717,12 +760,17 @@ run_game() {
 stage_world() {   # BUILDING.md section 6: the world the bake loads, made without clicks
   /bin/rm -rf "$I/fgamedir/saves/world"; /bin/mkdir -p "$I/fgamedir/saves"
   mac_run_settings
-  echo "A Minecraft window opens for about a minute (sound off)."
+  window_note "a minute"
   export GAMEARGS=""
   run_game world 900 agent -javaagent:"$WORK/agents/mkworld-agent.jar=30" -Dvivecraft.openxr.mobile=true
   /usr/bin/grep -q '\[MKWORLD\] DONE' "$GAME_LOG" \
     || fail "the world-creation run ended early: $(/usr/bin/grep -o '\[MKWORLD\].*' "$GAME_LOG" | /usr/bin/tail -1 | /usr/bin/cut -c1-160) (game log: $GAME_LOG)."
   [ -f "$I/fgamedir/saves/world/level.dat" ] || fail "the world-creation run left no saves/world/level.dat."
+  # what the game said about itself while the player was in the world (MkWorldAgent's "rendering" lines)
+  echo "the game drew $(/usr/bin/sed -n 's/.*\[MKWORLD\] rendering: \([0-9]*\) fps.*/\1/p' "$GAME_LOG" | /usr/bin/sort -n | /usr/bin/sed -n '1p;$p' | /usr/bin/tr '\n' ' ')frames a second (lowest and highest of $(/usr/bin/grep -c '\[MKWORLD\] rendering:' "$GAME_LOG") readings)"
+  if [ "${VIVECRAFT_BUILD_SHOW_WINDOWS:-0}" != 1 ] && /usr/bin/grep -q '\[MKWORLD\] rendering:.*mouse grabbed=true' "$GAME_LOG"; then
+    echo "!! note: the game held the mouse during this run although its window was meant to stay out of the way"
+  fi
   echo "world created: saves/world ($(/usr/bin/du -sh "$I/fgamedir/saves/world" | /usr/bin/cut -f1))"
 }
 check_world() { [ -f "$I/fgamedir/saves/world/level.dat" ]; }
@@ -733,7 +781,7 @@ stage_bake() {   # BUILDING.md section 6: the Knot bake, its check, the prune
   for at in 120 300; do
     /bin/rm -rf "$I/bake"
     mac_run_settings
-    echo "A Minecraft window opens for about $((at / 60 + 1)) minutes (sound off); the full pass starts $at s after the JVM."
+    window_note "$((at / 60 + 1)) minutes"; echo "The full pass starts $at s after the JVM."
     export GAMEARGS="--quickPlaySingleplayer world"
     run_game bake $((at + 480)) summary \
       -javaagent:"$NI/bakeagent/bakeagent.jar=$I/bake" -Dbake.fullAt=$at -Dvivecraft.openxr.mobile=true
