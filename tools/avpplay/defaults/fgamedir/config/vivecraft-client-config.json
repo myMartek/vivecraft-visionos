@@ -127,7 +127,7 @@
   "RADIAL_4": "vivecraft.key.toggleHandheldCam",
   "RADIAL_5": "vivecraft.key.togglePlayerList",
   "rememberVr": "true",
-  "hudOcclusion": "true",
+  "hudOcclusion": "false",
   "RADIAL_8": "",
   "RADIAL_9": "",
   "aimDevice": "CONTROLLER",
