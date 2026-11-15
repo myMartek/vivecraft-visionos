@@ -32,7 +32,7 @@
 # Two stages open a real Minecraft window for about three minutes in all (BUILDING.md section 6: the world the bake
 # loads, then the Knot bake). Sound is off, the microphone is not opened, and both runs end by themselves.
 #
-# Optional environment: AVPPLAY_NI_HEAP (native-image heap, e.g. 11g), AVPPLAY_NI_THREADS, AVPPLAY_JOBS (compiler
+# Optional environment: AVPPLAY_NI_HEAP (native-image heap, e.g. 11g), AVPPLAY_NI_THREADS, AVPPLAY_BUILD_JOBS (compiler
 # jobs of the native helpers), AVPPLAY_STALL_MIN (minutes without output or download progress before a stage counts as hung).
 
 # zsh/sh-safe entry: everything below is bash.
@@ -46,7 +46,7 @@ SELF="$SELF_DIR/$(basename "$0")"
 if [ "${AVPPLAY_ENV:-}" != clean ]; then
   keep=(AVPPLAY_ENV=clean "HOME=${HOME:-}" "USER=${USER:-$(/usr/bin/id -un)}" "LOGNAME=${LOGNAME:-$(/usr/bin/id -un)}"
         PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C LANG=C)
-  for v in AVPPLAY_WORK AVPPLAY_OUT AVPPLAY_NI_HEAP AVPPLAY_NI_THREADS AVPPLAY_JOBS AVPPLAY_STALL_MIN \
+  for v in AVPPLAY_WORK AVPPLAY_OUT AVPPLAY_NI_HEAP AVPPLAY_NI_THREADS AVPPLAY_BUILD_JOBS AVPPLAY_STALL_MIN \
            AVPPLAY_DEV_STAMP DEVELOPER_DIR http_proxy https_proxy all_proxy no_proxy \
            HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY; do
     eval "isset=\${$v+x}"
@@ -255,7 +255,7 @@ export KL_MSA_SECRETS=/nonexistent      # stage_native.sh must never look for a 
 # `python3` of the project's scripts is the system one, whatever else is installed.
 printf '#!/bin/sh\nexec /usr/bin/python3 "$@"\n' > "$WORK/bin/python3"; /bin/chmod 755 "$WORK/bin/python3"
 
-if [ -n "${AVPPLAY_JOBS:-}" ]; then JOBS=$AVPPLAY_JOBS
+if [ -n "${AVPPLAY_BUILD_JOBS:-}" ]; then JOBS=$AVPPLAY_BUILD_JOBS
 elif [ "$MEM_GB" -lt 24 ]; then JOBS=2
 else JOBS=4; fi
 export JOBS
