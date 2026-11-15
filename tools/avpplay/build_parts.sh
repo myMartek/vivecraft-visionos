@@ -674,10 +674,7 @@ stage_classpath() {   # BUILDING.md section 6: classpaths and the two agents
     "$I/jarfix" "$I/out" "$I/mac-run-settings" "$I"/*.cp bakeagent baked
   LC_ALL=$CP_LOCALE scripts/mkcp.sh
   LC_ALL=$CP_LOCALE scripts/mkcp-fabric.sh
-  local BA="$WORK/tmp/bakeagent-classes"
-  /bin/rm -rf "$BA"; /bin/mkdir -p "$BA" bakeagent
-  "$G/bin/javac" -cp "$(/bin/cat "$I/fabric.cp")" -d "$BA" scripts/bake-src/BakeAgent.java
-  "$G/bin/jar" cfm bakeagent/bakeagent.jar scripts/bake-src/MANIFEST.MF -C "$BA" .
+  # The bake agent is compiled by stage bake: a change to it then repeats the bake, not the classpath and the world.
   # The world agent is compiled without the game and kept outside the instance: never in mods/, on no classpath.
   local MW="$WORK/tmp/mkworld-classes"
   /bin/rm -rf "$MW" "$WORK/agents/mkworld-agent.jar"; /bin/mkdir -p "$MW"
@@ -698,7 +695,7 @@ stage_classpath() {   # BUILDING.md section 6: classpaths and the two agents
   mac_run_settings
   echo "$(/usr/bin/tr ':' '\n' < "$I/fabric.cp" | /usr/bin/wc -l | /usr/bin/tr -d ' ') classpath entries, $(/bin/ls "$I/fgamedir/mods" | /usr/bin/wc -l | /usr/bin/tr -d ' ') mods"
 }
-check_classpath() { [ -f "$I/fabric.cp" ] && [ -f "$NI/bakeagent/bakeagent.jar" ] && [ -f "$WORK/agents/mkworld-agent.jar" ] && [ -d "$I/fgamedir/mods" ]; }
+check_classpath() { [ -f "$I/fabric.cp" ] && [ -f "$WORK/agents/mkworld-agent.jar" ] && [ -d "$I/fgamedir/mods" ]; }
 
 QUIET_W=320; QUIET_H=240      # the window of the two runs (points), unless VIVECRAFT_BUILD_SHOW_WINDOWS=1
 QUIET_LIB="$WORK/agents/libquietwindow.dylib"
@@ -826,7 +823,10 @@ check_world() { [ -f "$I/fgamedir/saves/world/level.dat" ]; }
 stage_bake() {   # BUILDING.md section 6: the Knot bake, its check, the prune
   cd "$NI"
   local at ok=0 s
-  local try
+  local try BA="$WORK/tmp/bakeagent-classes"
+  /bin/rm -rf "$BA" bakeagent; /bin/mkdir -p "$BA" bakeagent
+  "$G/bin/javac" -cp "$(/bin/cat "$I/fabric.cp")" -d "$BA" scripts/bake-src/BakeAgent.java
+  "$G/bin/jar" cfm bakeagent/bakeagent.jar scripts/bake-src/MANIFEST.MF -C "$BA" .
   for at in 120 300; do
     for try in 1 2; do
       /bin/rm -rf "$I/bake"
@@ -991,25 +991,41 @@ check_zip() {
 
 # ---------------------------------------------------------------------------------------------------------------
 # Stage bookkeeping
-# A stage is done when its marker carries the stamp of its inputs and its check passes. Stamps (parts_helper.py):
-# the tools and GraalVM depend on the pin table; payload and zip on the whole checkout minus documentation; every
-# other stage on the checkout minus documentation, the option defaults and the licence folder. So a new commit that
-# only changes options or licences repeats the last two stages, any other change rebuilds from the headers on
-# (downloads are kept and checked, not fetched again).
-read -r STAMP_ALL STAMP_BUILD STAMP_PAYLOAD <<EOF
+# A stage is done when its marker carries the stamp of its inputs and its check passes. Stamps (parts_helper.py,
+# STAGE_INPUTS): the tools and GraalVM depend on the pin table; every other stage on the files of the checkout it is
+# built from, the parts of this script and of parts_helper.py it runs (not the progress display, the stall guard and
+# the rest of the bookkeeping), and the stamps of the stages it builds on. So a commit that changes only the bake
+# repeats the bake and the stages after it, one that changes only options or licences repeats payload and zip, and
+# one that changes a native library's script builds from the native libraries on (downloads are kept and checked,
+# not fetched again). A stage that runs makes every later stage run too (run_stage).
+STAMP_ALL=""
+while read -r k v; do
+  case "$k" in
+    all) STAMP_ALL="$v" ;;
+    headers|vivecraft|minecraft|openal|lwjgl|klsdl|ltw|voicechat|shims|classpath|world|bake|launcher|image|relink|payload|zip)
+      printf -v "STAMP_$k" '%s' "$v" ;;
+  esac
+done <<EOF
 $(py manifest "$SRC" "$STATE/manifest.new.json" 2>>"$LOG")
 EOF
-[ -n "${STAMP_PAYLOAD:-}" ] || finish_fail 2 "the checkout $SRC could not be read."
-if [ -n "${AVPPLAY_DEV_STAMP:-}" ]; then STAMP_BUILD="dev-$AVPPLAY_DEV_STAMP"; STAMP_PAYLOAD="dev-$AVPPLAY_DEV_STAMP"; fi   # development only
+for s in $STAGES; do
+  case $s in tree|tools|graalvm) continue ;; esac
+  eval "v=\${STAMP_$s:-}"
+  [ -n "$v" ] && [ -n "$STAMP_ALL" ] || finish_fail 2 "the checkout $SRC could not be read."
+done
+if [ -n "${AVPPLAY_DEV_STAMP:-}" ]; then   # development only: the stages from the headers on keep their markers
+  for s in $STAGES; do case $s in tree|tools|graalvm) ;; *) printf -v "STAMP_$s" '%s' "dev-$AVPPLAY_DEV_STAMP" ;; esac; done
+fi
 STAMP_PINS="$(printf '%s' "$PINS" | /usr/bin/shasum -a 256 | /usr/bin/cut -c1-24)"
 
 stamp_for() {
   case $1 in
     tree) echo "$STAMP_ALL" ;;
     tools|graalvm) echo "pins-$STAMP_PINS" ;;
-    payload) echo "$STAMP_PAYLOAD" ;;
-    zip) echo "$STAMP_PAYLOAD $OUT" ;;
-    *) echo "$STAMP_BUILD" ;;
+    zip) echo "$STAMP_zip $OUT" ;;
+    headers|vivecraft|minecraft|openal|lwjgl|klsdl|ltw|voicechat|shims|classpath|world|bake|launcher|image|relink|payload)
+      eval "echo \"\${STAMP_$1}\"" ;;
+    *) echo "unknown-stage-$1" ;;
   esac
 }
 stage_done() {

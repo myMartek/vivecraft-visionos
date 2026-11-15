@@ -443,7 +443,21 @@ Where it differs from the sections above:
 - **native-image** gets its heap from the machine: 70 % of the memory, at least 11g, at most the 28g of section 7; one worker below 24 GB, two below 32 GB, native-image's own default above. Only 16 GB is measured: 11g and one worker built the image on an M4 in 14 m 49 s with 5.8 GB peak resident (2026-11-14).
 - **The parts:** `bundle_payload.sh` (which runs `stage_native.sh --local`), `copy_licenses.sh`, `mknative.sh` with `XROS_PLATFORMS=xros` for the 18 libraries, then `scrub_paths.py`, as `run.sh` does around the Xcode build. The zip has sorted entries and fixed dates.
 
-A change of the checkout repeats what depends on it: only `options.txt`, the overrides or `visionos/Licenses` repeat the last two stages; anything else except documentation rebuilds from the headers on, with the downloads already there.
+### What a new commit builds again
+
+Each stage carries a stamp of what it is built from: its files of the checkout, the parts of `build_parts.sh` and `parts_helper.py` it runs, and the stamps of the stages before it (`STAGE_INPUTS` in `parts_helper.py`). A stage whose stamp is unchanged and whose result is there is skipped; a stage that runs makes every later stage run. The downloads stay in the work folder in any case. The times are the sums of the reference times of those stages (Mac mini M4, 16 GB, downloads there):
+
+| The commit changes | Runs again | About |
+|---|---|---|
+| documentation, the progress display, the stall guard or other bookkeeping of the script | nothing (the working copy is updated) | seconds |
+| `options.txt`, the overrides, `visionos/Licenses` | payload, zip | 1 min |
+| the bake (`bake-src/`, the expected failure list, the prune), the launcher, the image scripts and configs, `visionos/`, `runtime/` | from the bake on | 20 min |
+| the classpath scripts, the world agent, the window helper, the mod configs, anything not listed elsewhere | from the classpath on | 21 min |
+| the native libraries' scripts and sources (`work/natives/`, `t2/`, `t4-src/`, `t8b/`, `vendor/`) | from the native libraries on | 26 min |
+| the Vivecraft patches or the Minecraft download script | from that stage on | 26 min |
+| the pins or the lines of `build_parts.sh` outside its functions | from the headers on | 26 min |
+
+The image stage (native-image, about 16 minutes) runs whenever anything before it ran: GraalVM translates the whole game in one go and cannot reuse an earlier image. Which file belongs to which stage is checked by building from a checkout that holds only a stage's files; a new file a native library or an earlier stage reads goes into its list in `parts_helper.py`. Checked on 2026-11-15, one work folder, three runs: a checkout with only the files of the headers to the native libraries built those stages and failed at the classpath (no `mkcp.sh`); a checkout without the `LATE` files skipped them, built the classpath and the world and failed at the bake (no `BakeAgent.java`); the full checkout then skipped everything up to the world and built the parts from the bake on in 17 min 27 s (native-image 14 min 2 s).
 
 ## Building 26.2 (release 1.0.2)
 

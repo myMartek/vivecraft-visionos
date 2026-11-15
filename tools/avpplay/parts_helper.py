@@ -3,7 +3,8 @@
 
 Only the Python that macOS and Xcode bring (3.9), standard library only.
 
-  manifest <checkout> <out.json>            hash every file of the checkout; print "<all> <build> <payload>" stamps
+  manifest <checkout> <out.json>            hash every file of the checkout; print "<name> <stamp>" lines: "all",
+                                            then one per stage from headers on (STAGE_INPUTS)
   sync <checkout> <tree> <new.json> <old.json>
                                             make <tree> hold the checkout's files (changed ones copied, vanished
                                             ones removed); build products in <tree> are left alone
@@ -19,9 +20,11 @@ Only the Python that macOS and Xcode bring (3.9), standard library only.
   scan <app-dir> <needle>...                fail when a file outside Frameworks/ contains one of the strings
   zip <dir> <out.zip>                       write <dir> (its Payload/ folder) as a reproducible zip; print its sha256
 """
+import ast
 import hashlib
 import json
 import os
+import re
 import select
 import shutil
 import signal
@@ -32,7 +35,7 @@ import time
 import zipfile
 
 # Files that only matter to the last two stages (payload, zip). Everything else that is not documentation is a
-# build input: a change there rebuilds from the headers stage on.
+# build input of the stages named below.
 PAYLOAD_ONLY = (
     "tools/avpplay/defaults/fgamedir/options.txt",
     "tools/avpplay/defaults/options-overrides.txt",
@@ -40,6 +43,76 @@ PAYLOAD_ONLY = (
 )
 DOCS = ("docs/", ".github/", "LICENSES/", "LICENSE", ".gitignore")
 SKIP_NAMES = {".DS_Store", "__pycache__", ".git"}
+
+# ---------------------------------------------------------------------------------------------------------------
+# What each stage is built from (BUILDING.md, "What a new commit builds again"). A stage is skipped when its stamp
+# is the one its marker carries; the stamp covers the files below, the parts of build_parts.sh and of this helper the
+# stage runs, and the stamps of the stages it builds on. A pattern is a path, a folder ("…/") or a prefix ("…*").
+#
+# Two directions, both checked by a build from a checkout that holds only those files (2026-11-15):
+#   HEADERS_IN .. NATIVES_IN are complete lists: those stages read nothing else of the checkout. A file they read
+#     that is missing here would let them be skipped although it changed, so a new file of theirs goes here.
+#   LATE lists files that only the bake and the stages after it read. A file wrongly listed here would let the
+#     classpath and world stages be skipped although it changed; a file missing here only costs a rerun of them.
+# Every other build file is an input of the classpath stage and of everything after it, as before.
+HEADERS_IN = ("work/natives/scripts/fetch-graphics-headers.py",)
+VIVECRAFT_IN = ("work/vivecraft-openxr-26.3/", "work/vivecraft-openxr-26.2/canonicalize-vivecraft-jar.py")
+MINECRAFT_IN = ("work/native-image/scripts/m3a/fetch-inst.py", "work/native-image/scripts/m3a/mods-*",
+                "tools/vivecraft_install_instance.py")    # fetch-inst.py loads it
+NATIVES_IN = (
+    "work/natives/", "work/native-image/scripts/t2/", "work/native-image/scripts/t4-src/",
+    "work/native-image/scripts/t4/glfwrefs.py", "work/native-image/scripts/t8b/", "work/native-image/scripts/jdk.sh",
+    "work/native-image/scripts/inst.sh", "tools/avpplay/pins/lwjgl-*", "vendor/",
+)
+LATE = (
+    "work/native-image/scripts/bake-src/", "work/native-image/scripts/prune_overlay.py",
+    "work/native-image/scripts/prune-overlay.sh", "tools/avpplay/bake-failures-*",
+    "work/native-image/scripts/baked-src/", "work/native-image/scripts/mkcp-baked.sh",
+    "work/native-image/scripts/m3a/build-launcher.sh", "work/native-image/scripts/m3a/check-subst.py",
+    "work/native-image/scripts/m3a/pin-gl-options.py", "work/native-image/scripts/t4/build-t4.sh",
+    "work/native-image/scripts/t4/run.sh", "work/native-image/scripts/t3-src/", "work/native-image/scripts/t23/",
+    "work/native-image/scripts/t8/", "work/native-image/scripts/subst-fabric-src*",
+    "work/native-image/scripts/spikef-src*", "work/native-image/inst-26.3/config/", "work/native-image/inst-26.2/",
+    "work/native-image/config/", "tools/avpplay/pins/baked-*", "visionos/", "runtime/", "angle-patches/", "games/",
+    "work/xros-probe/",
+)
+SCRIPT = "tools/avpplay/build_parts.sh"
+HELPER = "tools/avpplay/parts_helper.py"
+# (stage, its files, the stages it builds on). "all" = every build file except LATE ones, "build" = every build
+# file, "payload" = every build and payload file. tree, tools and graalvm are stamped by build_parts.sh itself.
+STAGE_INPUTS = (
+    ("headers", HEADERS_IN, ()),
+    ("vivecraft", VIVECRAFT_IN, ()),
+    ("minecraft", MINECRAFT_IN, ("vivecraft",)),
+    ("openal", NATIVES_IN, ("headers", "minecraft")),
+    ("lwjgl", NATIVES_IN, ("openal",)),
+    ("klsdl", NATIVES_IN, ("lwjgl",)),
+    ("ltw", NATIVES_IN, ("klsdl",)),
+    ("voicechat", NATIVES_IN, ("ltw",)),
+    ("shims", NATIVES_IN, ("voicechat",)),
+    ("classpath", "early", ("shims",)),
+    ("world", "early", ("classpath",)),
+    ("bake", "build", ("world",)),
+    ("launcher", "build", ("bake",)),
+    ("image", "build", ("launcher",)),
+    ("relink", "build", ("image",)),
+    ("payload", "payload", ("relink",)),
+    ("zip", "payload", ("payload",)),
+)
+# Functions of build_parts.sh that do the bookkeeping of a run (progress, stall guard, markers, signals, checks
+# before the start) and leave the parts alone. A change to them alone rebuilds nothing; a stage that calls one of
+# them has it among its own inputs all the same.
+SH_BOOKKEEPING = {
+    "work_problem", "free_gb", "need_gb", "prereq_problems", "finish_fail", "on_signal", "stop_started",
+    "stop_logpipe", "started", "descendants", "run_stage", "preflight", "stage_done", "mark_done", "stamp_for",
+    "stall_limit", "progress_dirs", "progress_size", "ref_of", "lwjgl_cold", "plan_line", "progress_args",
+}
+# The same for this helper: the progress display and the stamps themselves (a stage's files are hashed anyway).
+PY_BOOKKEEPING = {
+    "PROTOCOL", "PARTS", "MINECRAFT_GROUPS", "BAKE_AFTER_PASS", "Progress", "cmd_logpipe", "cmd_manifest",
+    "HEADERS_IN", "VIVECRAFT_IN", "MINECRAFT_IN", "NATIVES_IN", "LATE", "SCRIPT", "HELPER", "STAGE_INPUTS",
+    "SH_BOOKKEEPING", "PY_BOOKKEEPING", "pattern_match", "sh_sections", "py_relevant", "stage_stamps",
+}
 
 
 def sha256_file(path):
@@ -85,6 +158,146 @@ def kind_of(rel):
     return "build"
 
 
+def pattern_match(rel, patterns):
+    for p in patterns:
+        if p.endswith("/") or p.endswith("*"):
+            if rel.startswith(p.rstrip("*")):
+                return True
+        elif rel == p:
+            return True
+    return False
+
+
+SH_DEF = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{")
+
+
+def sh_sections(text):
+    """build_parts.sh as {function name: its lines} and the lines outside functions, whole-line comments and blank
+    lines dropped. Every function starts in column 0 with "name() {"; it ends on the same line, or at the next line
+    that is "}" alone. Returns None when the file does not follow that, and the caller hashes the whole file."""
+    funcs, top = {}, []
+    lines = text.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = SH_DEF.match(line)
+        if not m:
+            if re.match(r"^\s*[A-Za-z_][A-Za-z0-9_]*\(\)\s*\{", line):
+                return None                       # a function that does not start in column 0
+            if line.strip() and not line.lstrip().startswith("#"):
+                top.append(line)
+            i += 1
+            continue
+        name = m.group(1)
+        if name in funcs:
+            return None
+        if re.search(r"\{\s*(#.*)?$", line):     # "name() {" with the body on the next lines
+            j = i + 1
+            while j < len(lines) and lines[j] != "}":
+                if SH_DEF.match(lines[j]):
+                    return None
+                j += 1
+            if j == len(lines):
+                return None
+            body = lines[i:j + 1]
+            i = j + 1
+        else:
+            body = [line]
+            i += 1
+        funcs[name] = [l for l in body if l.strip() and not l.lstrip().startswith("#")]
+    return funcs, top
+
+
+def sh_refs(lines, names):
+    text = "\n".join(lines)
+    return {n for n in names if re.search(r"(?<![A-Za-z0-9_])" + re.escape(n) + r"(?![A-Za-z0-9_])", text)}
+
+
+def py_relevant(source):
+    """This helper without its docstring, comments and bookkeeping (PY_BOOKKEEPING): what a stage that runs it
+    depends on."""
+    out = []
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Expr) and isinstance(getattr(node, "value", None), ast.Constant) \
+                and isinstance(node.value.value, str):
+            continue
+        names = set()
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            names = {t.id for t in node.targets if isinstance(t, ast.Name)}
+        if names and names <= PY_BOOKKEEPING:
+            continue
+        out.append(ast.dump(node))
+    return "\n".join(out)
+
+
+def stage_stamps(root, files):
+    """{stage: stamp} for the stages of STAGE_INPUTS."""
+    def h(*parts):
+        d = hashlib.sha256()
+        for p in parts:
+            d.update(p.encode("utf-8", "surrogateescape"))
+            d.update(b"\n")
+        return d.hexdigest()[:24]
+
+    def entry(rel):
+        e = files[rel]
+        return "%s %s %s" % (e.get("sha") or "link:" + e["link"], int(e.get("x", False)), rel)
+
+    script = helper = ""
+    if SCRIPT in files and "sha" in files[SCRIPT]:
+        script = open(os.path.join(root, SCRIPT), encoding="utf-8", errors="surrogateescape").read()
+    if HELPER in files and "sha" in files[HELPER]:
+        helper = open(os.path.join(root, HELPER), encoding="utf-8", errors="surrogateescape").read()
+    try:
+        helper_part = py_relevant(helper)
+    except SyntaxError:
+        helper_part = helper
+    sections = sh_sections(script)
+    if sections is None:
+        common = h("script " + hashlib.sha256(script.encode("utf-8", "surrogateescape")).hexdigest(), helper_part)
+        own_of = lambda stage: ""
+    else:
+        funcs, top = sections
+
+        def closure(start, stop):
+            seen, todo = set(), list(start)
+            while todo:
+                f = todo.pop()
+                if f in seen or f in stop:
+                    continue
+                seen.add(f)
+                todo.extend(sh_refs(funcs[f], funcs.keys()) - seen)
+            return seen
+
+        shared = closure(sh_refs(top, funcs.keys()), SH_BOOKKEEPING)
+        common = h("top", *top, "functions", *["%s\n%s" % (f, "\n".join(funcs[f])) for f in sorted(shared)],
+                   "helper", helper_part)
+
+        def own_of(stage):
+            start = [f for f in ("stage_" + stage, "check_" + stage) if f in funcs]
+            mine = closure(start, set()) - shared
+            return "\n".join("%s\n%s" % (f, "\n".join(funcs[f])) for f in sorted(mine))
+
+    kinds = {rel: kind_of(rel) for rel in files}
+    special = (SCRIPT, HELPER)
+    stamps = {}
+    for stage, pats, deps in STAGE_INPUTS:
+        if pats == "early":
+            pick = lambda rel: kinds[rel] == "build" and not pattern_match(rel, LATE)
+        elif pats == "build":
+            pick = lambda rel: kinds[rel] == "build"
+        elif pats == "payload":
+            pick = lambda rel: kinds[rel] in ("build", "payload")
+        else:
+            pick = lambda rel, pats=pats: kinds[rel] == "build" and pattern_match(rel, pats)
+        mine = [entry(rel) for rel in sorted(files) if rel not in special and pick(rel)]
+        stamps[stage] = h("stamp 2", "common " + common, "own " + h(own_of(stage)), "files " + h(*mine),
+                          "after " + " ".join(stamps[d] for d in deps))
+    return stamps
+
+
 def cmd_manifest(root, out):
     files = {}
     for rel in checkout_files(root):
@@ -94,21 +307,19 @@ def cmd_manifest(root, out):
             files[rel] = {"link": os.readlink(p)}
         elif stat.S_ISREG(st.st_mode):
             files[rel] = {"sha": sha256_file(p), "x": bool(st.st_mode & 0o111)}
-    def stamp(kinds):
-        h = hashlib.sha256()
-        for rel in sorted(files):
-            if kind_of(rel) in kinds:
-                e = files[rel]
-                h.update(("%s %s %s\n" % (e.get("sha") or "link:" + e["link"], int(e.get("x", False)), rel))
-                         .encode("utf-8", "surrogateescape"))
-        return h.hexdigest()[:24]
-    stamps = {"all": stamp(("build", "payload", "docs")), "build": stamp(("build",)),
-              "payload": stamp(("build", "payload"))}
+    h = hashlib.sha256()
+    for rel in sorted(files):
+        e = files[rel]
+        h.update(("%s %s %s\n" % (e.get("sha") or "link:" + e["link"], int(e.get("x", False)), rel))
+                 .encode("utf-8", "surrogateescape"))
+    stamps = {"all": h.hexdigest()[:24]}
+    stamps.update(stage_stamps(root, files))
     tmp = out + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"files": files, "stamps": stamps}, f)
     os.replace(tmp, out)
-    print(stamps["all"], stamps["build"], stamps["payload"])
+    for name in ["all"] + [s for s, _, _ in STAGE_INPUTS]:
+        print(name, stamps[name])
 
 
 def cmd_sync(root, tree, new_json, old_json):
