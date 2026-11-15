@@ -301,6 +301,11 @@ def stage_stamps(root, files):
 def cmd_manifest(root, out):
     files = {}
     for rel in checkout_files(root):
+        # The mark AVP Play puts into its checkout names the commit; as a build file it would give every new commit
+        # new stamps for the stages built from all build files (classpath, world, bake, launcher). It is filtered
+        # here, in a bookkeeping function, so that the helper's stamped part stays as it was.
+        if rel == ".avpplay-builder.json":
+            continue
         p = os.path.join(root, rel)
         st = os.lstat(p)
         if stat.S_ISLNK(st.st_mode):

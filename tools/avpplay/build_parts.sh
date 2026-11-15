@@ -907,9 +907,13 @@ stage_image() {   # BUILDING.md section 7: native-image
   echo "native-image: heap $NI_HEAP, workers ${NI_THREADS:-default}, on $MEM_GB GB of memory"
   echo "memory before: swap $(/usr/sbin/sysctl -n vm.swapusage 2>/dev/null); $(/usr/bin/memory_pressure 2>/dev/null | /usr/bin/tail -1)"
   echo "other heavy jobs right now: $(/usr/bin/pgrep -fl 'xcodebuild|swift-frontend|native-image' 2>/dev/null | /usr/bin/cut -c1-80 | /usr/bin/tr '\n' ';' || true)"
+  # The watchdog's 10 minutes without a progress report are too short for a 16 GB Mac under memory pressure:
+  # "Building universe" is one long step (624 s on such a Mac, 2026-11-15), and one run was aborted there with exit
+  # status 30 although nothing hung. 60 minutes still ends a real deadlock.
   NATIVE_IMAGE_HEAP="$NI_HEAP" NATIVE_IMAGE_THREADS="$NI_THREADS" \
     CPFILE="$I/t4-ni.cp" CONFIG_DIRS="$I/config/t23-trim,$I/config/t23-extra" \
-    T8OUT="$T8" LOGTAG=avpplay scripts/t8/build-shared.sh || fail "native-image failed (heap $NI_HEAP, workers ${NI_THREADS:-default})."
+    T8OUT="$T8" LOGTAG=avpplay scripts/t8/build-shared.sh -H:DeadlockWatchdogInterval=60 \
+    || fail "native-image failed (heap $NI_HEAP, workers ${NI_THREADS:-default})."
   /usr/bin/awk '/maximum resident set size/{print $1}' logs/t8-build-avpplay.txt | /usr/bin/tail -1 > "$STATE/image-peak-rss"
   /usr/bin/awk '$2=="real"{print $1}' logs/t8-build-avpplay.txt | /usr/bin/tail -1 > "$STATE/image-real"
   echo "native-image: $(/bin/cat "$STATE/image-real") s, peak resident memory $(/usr/bin/awk '{printf "%.2f GB", $1/1e9}' "$STATE/image-peak-rss")"
